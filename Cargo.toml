@@ -1,0 +1,31 @@
+[package]
+name = "synthol-vst"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A minimal sine-wave VST3 instrument built with Truce"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = ["vst3"]
+vst3 = ["dep:truce-vst3"]
+shell = ["truce/shell"]
+rt-paranoid = ["truce/rt-paranoid"]
+
+[dependencies]
+truce = { version = "6.3.0", default-features = false }
+truce-slint = "6.3.0"
+truce-vst3 = { version = "6.3.0", optional = true }
+slint = { version = "=1.15.1", default-features = false, features = ["compat-1-2", "renderer-software", "std"] }
+
+[dev-dependencies]
+truce-test = "6.3.0"
+
+[build-dependencies]
+truce-slint-build = "6.3.0"
+
+# Truce uses this profile for the VST3 shell installed with --shell.
+[profile.shell]
+inherits = "release"

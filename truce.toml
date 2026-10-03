@@ -1,0 +1,14 @@
+[vendor]
+name = "Synthol Audio"
+id = "com.synthol-audio"
+url = "https://example.com"
+au_manufacturer = "SyAu"
+
+[[plugin]]
+name = "Synthol"
+bundle_id = "com.synthol-audio.synthol-vst"
+crate = "synthol-vst"
+category = "instrument"
+fourcc = "Synt"
+au_tag = "Synthesizer"
+vst3_subcategory = "Synth"

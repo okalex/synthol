@@ -1,0 +1,142 @@
+import "JetBrainsMono-Regular.ttf";
+
+component OutputGainSlider inherits Rectangle {
+    in-out property <float> value: 1.0;
+    in property <string> value-text: "0.0 dB";
+
+    callback pressed();
+    callback changed(float);
+    callback released();
+
+    height: 50px;
+
+    Text {
+        y: 0px;
+        horizontal-alignment: left;
+        text: "Output Gain";
+        font-size: 10px;
+        color: #b0b3bd;
+    }
+
+    Rectangle {
+        x: 8px;
+        y: 28px;
+        width: parent.width - 68px;
+        height: 4px;
+        border-radius: 2px;
+        background: #343943;
+    }
+
+    Rectangle {
+        x: 8px;
+        y: 28px;
+        width: (parent.width - 68px) * root.value;
+        height: 4px;
+        border-radius: 2px;
+        background: #4d99f2;
+    }
+
+    Rectangle {
+        x: root.value * (parent.width - 68px);
+        y: 22px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: #e8eaf0;
+    }
+
+    Text {
+        x: parent.width - 48px;
+        y: 20px;
+        horizontal-alignment: left;
+        text: root.value-text;
+        font-size: 10px;
+        color: #b0b3bd;
+    }
+
+    // Unlike Slint's standard Slider, this drag-only control has no
+    // FocusScope: pointer interaction must leave computer-MIDI keys
+    // available to the host.
+    TouchArea {
+        x: 8px;
+        y: 16px;
+        width: parent.width - 68px;
+        height: 28px;
+        property <bool> gesture-active: false;
+
+        moved => {
+            if self.gesture-active {
+                root.value = clamp(self.mouse-x / self.width, 0.0, 1.0);
+                root.changed(root.value);
+            }
+        }
+
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                self.gesture-active = true;
+                root.pressed();
+                root.value = clamp(self.mouse-x / self.width, 0.0, 1.0);
+                root.changed(root.value);
+            } else if self.gesture-active
+                    && (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                self.gesture-active = false;
+                root.released();
+            }
+        }
+    }
+}
+
+export component SynthUi inherits Window {
+    in-out property <float> gain: 1.0;
+    in-out property <string> gain-text: "0.0 dB";
+    callback gain-pressed();
+    callback gain-changed(float);
+    callback gain-released();
+
+    title: "Synthol";
+    preferred-width: 420px;
+    preferred-height: 180px;
+    background: #17191f;
+    default-font-family: "JetBrains Mono";
+
+    VerticalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            height: 38px;
+            vertical-stretch: 0;
+            background: #20232b;
+
+            Text {
+                x: 18px;
+                y: (parent.height - self.preferred-height) / 2;
+                text: "SYNTHOL";
+                font-size: 14px;
+                font-weight: 700;
+                color: #e8eaf0;
+            }
+        }
+
+        VerticalLayout {
+            padding: 20px;
+            spacing: 8px;
+            alignment: center;
+
+            Text {
+                text: "OUTPUT";
+                font-size: 10px;
+                font-weight: 700;
+                color: #9299a8;
+            }
+
+            OutputGainSlider {
+                width: 360px;
+                value <=> root.gain;
+                value-text: root.gain-text;
+                pressed => { root.gain-pressed(); }
+                changed(value) => { root.gain-changed(value); }
+                released => { root.gain-released(); }
+            }
+        }
+    }
+}
