@@ -43,14 +43,13 @@ impl SineOscillator {
             MidiEvent::NoteOn { note, .. } | MidiEvent::NoteOff { note } => {
                 if self.active_note == Some(note) {
                     self.active_note = None;
-                    self.amplitude = 0.0;
                 }
             }
         }
     }
 
     pub fn next_sample(&mut self) -> f32 {
-        if self.active_note.is_none() {
+        if self.amplitude == 0.0 {
             return 0.0;
         }
 
@@ -61,6 +60,15 @@ impl SineOscillator {
 
     pub fn has_active_note(&self) -> bool {
         self.active_note.is_some()
+    }
+
+    pub fn stop(&mut self) {
+        self.active_note = None;
+        self.amplitude = 0.0;
+    }
+
+    pub fn active_note(&self) -> Option<u8> {
+        self.active_note
     }
 }
 

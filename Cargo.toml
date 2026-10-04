@@ -29,3 +29,8 @@ truce-slint-build = "6.3.0"
 # Truce uses this profile for the VST3 shell installed with --shell.
 [profile.shell]
 inherits = "release"
+
+# Vendored truce-slint with keyboard events passed through to the host so the
+# DAW's computer-MIDI keyboard keeps working after clicking the editor.
+[patch.crates-io]
+truce-slint = { path = "vendor/truce-slint" }

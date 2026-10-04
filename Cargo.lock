@@ -4947,8 +4947,6 @@ dependencies = [
 [[package]]
 name = "truce-slint"
 version = "6.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e301063c5a5b4af4a78569170fb02901e72c05a36423302b9fdb15dfce02d16f"
 dependencies = [
  "baseview-truce",
  "bytemuck",

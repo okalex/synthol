@@ -1,3 +1,5 @@
+import { AdsrEnvelopePanel } from "controls.slint";
+
 import "JetBrainsMono-Regular.ttf";
 
 component OutputGainSlider inherits Rectangle {
@@ -89,13 +91,26 @@ component OutputGainSlider inherits Rectangle {
 export component SynthUi inherits Window {
     in-out property <float> gain: 1.0;
     in-out property <string> gain-text: "0.0 dB";
+    in-out property <float> attack: 0.251;
+    in-out property <float> decay: 0.549;
+    in-out property <float> sustain: 0.9;
+    in-out property <float> sustain-level: 0.501;
+    in-out property <float> release: 0.631;
+    in-out property <string> attack-text: "10.0 ms";
+    in-out property <string> decay-text: "500.0 ms";
+    in-out property <string> sustain-text: "-6.0 dB";
+    in-out property <string> release-text: "1000.0 ms";
     callback gain-pressed();
     callback gain-changed(float);
     callback gain-released();
+    callback envelope-pressed(int);
+    callback envelope-changed(int, float);
+    callback envelope-sustain-level-changed(float);
+    callback envelope-released(int);
 
     title: "Synthol";
-    preferred-width: 420px;
-    preferred-height: 180px;
+    preferred-width: 720px;
+    preferred-height: 540px;
     background: #17191f;
     default-font-family: "JetBrains Mono";
 
@@ -118,24 +133,46 @@ export component SynthUi inherits Window {
         }
 
         VerticalLayout {
-            padding: 20px;
-            spacing: 8px;
-            alignment: center;
+            padding: 18px;
+            spacing: 14px;
 
-            Text {
-                text: "OUTPUT";
-                font-size: 10px;
-                font-weight: 700;
-                color: #9299a8;
+            HorizontalLayout {
+                spacing: 20px;
+                alignment: center;
+
+                Text {
+                    text: "OUTPUT";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: #9299a8;
+                }
+
+                OutputGainSlider {
+                    width: 420px;
+                    value <=> root.gain;
+                    value-text: root.gain-text;
+                    pressed => { root.gain-pressed(); }
+                    changed(value) => { root.gain-changed(value); }
+                    released => { root.gain-released(); }
+                }
             }
 
-            OutputGainSlider {
-                width: 360px;
-                value <=> root.gain;
-                value-text: root.gain-text;
-                pressed => { root.gain-pressed(); }
-                changed(value) => { root.gain-changed(value); }
-                released => { root.gain-released(); }
+            AdsrEnvelopePanel {
+                width: 100%;
+                height: 380px;
+                attack <=> root.attack;
+                decay <=> root.decay;
+                sustain <=> root.sustain;
+                sustain-level: root.sustain-level;
+                release <=> root.release;
+                attack-text: root.attack-text;
+                decay-text: root.decay-text;
+                sustain-text: root.sustain-text;
+                release-text: root.release-text;
+                pressed(id) => { root.envelope-pressed(id); }
+                changed(id, value) => { root.envelope-changed(id, value); }
+                sustain-level-changed(value) => { root.envelope-sustain-level-changed(value); }
+                released(id) => { root.envelope-released(id); }
             }
         }
     }

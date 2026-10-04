@@ -15,10 +15,11 @@ belong off the real-time audio thread.
 ## Current implementation scope
 
 The code is being migrated incrementally. The current foundation separates
-the Truce adapter, Slint editor bridge, engine, MIDI event type, and sine
-oscillator. Engine construction compiles a fixed typed oscillator-to-output
-graph once; processing follows its prepared order without compiling or
-allocating in the audio callback. This fixed graph is an internal
+the Truce adapter, Slint editor bridge, engine, MIDI event type, sine
+oscillator, and reusable ADSR envelope. Engine construction compiles a fixed
+typed oscillator-to-output-envelope-to-output graph once; processing follows
+its prepared order without compiling or allocating in the audio callback.
+Output gain is applied after the envelope. This fixed graph is an internal
 representation only: it is not user-editable or serialized, and graph
 publication, patch persistence, additional node types, and a patching UI are
 future work. This keeps the current instrument's behavior unchanged while
@@ -250,6 +251,17 @@ This boundary allows the graph engine to be tested without Slint and leaves
 room for different editors or automation surfaces. UI selection, zoom,
 position, and panel layout are editor state; they should not affect audio
 rendering.
+
+For real-time parameter display, use the shared Truce parameter store as the
+source of truth rather than keeping independent knob, graph, and DSP copies.
+During a drag, controls update the shared parameter store immediately. Host
+automation edits are coalesced to the final value and sent by the editor's frame
+sync callback after the gesture, rather than invoking host callbacks for every
+pointer movement. The engine reads the shared parameter store during processing,
+and the editor sync callback pushes current values and formatted labels back to
+every view. Reusable controls expose normalized values and change callbacks,
+while the adapter maps those values to stable parameter IDs. Host automation
+uses the same parameter store.
 
 ## Testing strategy
 

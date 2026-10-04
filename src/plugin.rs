@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use truce::prelude::*;
 
 use crate::editor;
+use crate::engine::node::envelope::AdsrSettings;
 use crate::engine::{MidiEvent, SynthEngine};
 
 #[derive(Params)]
@@ -15,6 +17,19 @@ pub struct SynthParams {
         smooth = "exp(5)"
     )]
     pub volume: FloatParam,
+    #[param(name = "Attack", range = "skewed(0, 10000, 0.2)", default = 10.0, unit = "ms")]
+    pub attack: FloatParam,
+    #[param(name = "Decay", range = "skewed(0, 10000, 0.2)", default = 500.0, unit = "ms")]
+    pub decay: FloatParam,
+    #[param(name = "Sustain", range = "linear(-60, 0)", default = -6.0, unit = "dB")]
+    pub sustain: FloatParam,
+    #[param(
+        name = "Release",
+        range = "skewed(0, 10000, 0.2)",
+        default = 1000.0,
+        unit = "ms"
+    )]
+    pub release: FloatParam,
 }
 
 pub struct Synth;
@@ -43,6 +58,13 @@ impl PluginLogic for Synth {
         events: &EventList,
         _context: &mut ProcessContext,
     ) -> ProcessStatus {
+        state.engine.set_output_envelope_settings(AdsrSettings {
+            attack: Duration::from_secs_f64(f64::from(params.attack.read()) / 1000.0),
+            decay: Duration::from_secs_f64(f64::from(params.decay.read()) / 1000.0),
+            sustain_db: params.sustain.read() as f32,
+            release: Duration::from_secs_f64(f64::from(params.release.read()) / 1000.0),
+        });
+
         let mut next_event = 0;
         let output_channels = buffer.num_output_channels();
 

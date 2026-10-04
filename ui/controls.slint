@@ -1,0 +1,437 @@
+export component SynthKnob inherits Rectangle {
+    in-out property <float> value: 0.0;
+    in property <string> label;
+    in property <string> value-text;
+    in property <int> parameter-id;
+    callback pressed(int);
+    callback changed(int, float);
+    callback released(int);
+
+    width: 84px;
+    height: 112px;
+
+    Text {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        text: root.label;
+        font-size: 10px;
+        font-weight: 700;
+        color: #9299a8;
+        horizontal-alignment: center;
+    }
+
+    Rectangle {
+        x: 20px;
+        y: 18px;
+        width: 44px;
+        height: 44px;
+        border-radius: 22px;
+        background: #292d36;
+        border-width: 1px;
+        border-color: #424754;
+    }
+
+    Rectangle {
+        // Clockwise sweep from 7 o'clock (210deg) to 5 o'clock (510deg).
+        x: 42px + 16px * sin(210deg + root.value * 300deg) - 3px;
+        y: 40px - 16px * cos(210deg + root.value * 300deg) - 3px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: #56a7ff;
+    }
+
+    Text {
+        x: 0px;
+        y: 70px;
+        width: parent.width;
+        text: root.value-text;
+        font-size: 10px;
+        color: #c6cad4;
+        horizontal-alignment: center;
+    }
+
+    TouchArea {
+        x: 12px;
+        y: 12px;
+        width: 60px;
+        height: 60px;
+        property <bool> gesture-active: false;
+        property <float> start-value: 0.0;
+
+        moved => {
+            if self.gesture-active {
+                root.value = clamp(self.start-value - (self.mouse-y - self.pressed-y) / 100px, 0.0, 1.0);
+                root.changed(root.parameter-id, root.value);
+            }
+        }
+
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                self.gesture-active = true;
+                self.start-value = root.value;
+                root.pressed(root.parameter-id);
+            } else if self.gesture-active
+                    && (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                self.gesture-active = false;
+                root.released(root.parameter-id);
+            }
+        }
+    }
+}
+
+component EnvelopePoint inherits Rectangle {
+    in property <float> value;
+    in property <float> secondary-value: 0.0;
+    in property <int> parameter-id;
+    in property <int> secondary-parameter-id: -1;
+    in property <length> sensitivity: 120px;
+    in property <length> secondary-sensitivity: 120px;
+    in property <bool> vertical;
+    in property <bool> inverted;
+    in property <bool> two-dimensional;
+    callback pressed(int);
+    callback changed(int, float);
+    callback secondary-changed(float);
+    callback released(int);
+
+    width: 32px;
+    height: 32px;
+    background: transparent;
+
+    Rectangle {
+        x: 8px;
+        y: 8px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: #56a7ff;
+        border-width: 2px;
+        border-color: #e7f3ff;
+    }
+
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        property <bool> gesture-active: false;
+        property <float> start-value: 0.0;
+        property <float> start-secondary-value: 0.0;
+        property <int> selected-parameter: -1;
+        property <length> start-global-x: 0px;
+        property <length> start-global-y: 0px;
+
+        moved => {
+            if self.gesture-active {
+                if root.two-dimensional {
+                    let delta-x = self.mouse-x + self.absolute-position.x - self.start-global-x;
+                    let delta-y = self.mouse-y + self.absolute-position.y - self.start-global-y;
+                    let next-parameter = abs(delta-x) >= abs(delta-y)
+                        ? root.parameter-id : root.secondary-parameter-id;
+                    if next-parameter != self.selected-parameter {
+                        if self.selected-parameter >= 0 {
+                            root.released(self.selected-parameter);
+                        }
+                        self.selected-parameter = next-parameter;
+                        if next-parameter >= 0 {
+                            root.pressed(next-parameter);
+                        }
+                    }
+                    if next-parameter == root.parameter-id {
+                        root.changed(root.parameter-id, clamp(self.start-value + delta-x / root.sensitivity, 0.0, 1.0));
+                    } else if next-parameter == root.secondary-parameter-id {
+                        root.secondary-changed(clamp(self.start-secondary-value - delta-y / root.secondary-sensitivity, 0.0, 1.0));
+                    }
+                } else if root.vertical {
+                    let global-y = self.mouse-y + self.absolute-position.y;
+                    root.changed(root.parameter-id, clamp(self.start-value - (global-y - self.start-global-y) / root.sensitivity, 0.0, 1.0));
+                } else {
+                    let direction = root.inverted ? -1.0 : 1.0;
+                    let global-x = self.mouse-x + self.absolute-position.x;
+                    root.changed(root.parameter-id, clamp(self.start-value + direction * (global-x - self.start-global-x) / root.sensitivity, 0.0, 1.0));
+                }
+            }
+        }
+
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                self.gesture-active = true;
+                self.start-value = root.value;
+                self.start-secondary-value = root.secondary-value;
+                self.start-global-x = self.mouse-x + self.absolute-position.x;
+                self.start-global-y = self.mouse-y + self.absolute-position.y;
+                if !root.two-dimensional {
+                    self.selected-parameter = root.parameter-id;
+                    root.pressed(root.parameter-id);
+                }
+            } else if self.gesture-active
+                    && (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                self.gesture-active = false;
+                if self.selected-parameter >= 0 {
+                    root.released(self.selected-parameter);
+                    self.selected-parameter = -1;
+                }
+            }
+        }
+    }
+}
+
+export component AdsrEnvelopeGraph inherits Rectangle {
+    in property <float> attack: 0.251;
+    in property <float> decay: 0.549;
+    in property <float> sustain-level: 0.501;
+    in property <float> release: 0.631;
+    callback pressed(int);
+    callback changed(int, float);
+    callback sustain-level-changed(float);
+    callback released(int);
+
+    private property <length> plot-left: 24px;
+    private property <length> plot-right: self.width - 24px;
+    private property <length> plot-top: 24px;
+    private property <length> plot-bottom: self.height - 24px;
+    private property <length> plot-height: self.plot-bottom - self.plot-top;
+    private property <length> attack-x: self.plot-left + 0.03 * (self.plot-right - self.plot-left) + root.attack * 0.16 * (self.plot-right - self.plot-left);
+    private property <length> decay-x: self.attack-x + 0.05 * (self.plot-right - self.plot-left) + root.decay * 0.18 * (self.plot-right - self.plot-left);
+    private property <length> release-x: self.plot-right - (0.045 + root.release * 0.18) * (self.plot-right - self.plot-left);
+    private property <length> sustain-y: self.plot-bottom - root.sustain-level * self.plot-height;
+    private property <length> attack-sensitivity: 0.16 * (self.plot-right - self.plot-left);
+    private property <length> decay-sensitivity: 0.18 * (self.plot-right - self.plot-left);
+    private property <length> release-sensitivity: 0.18 * (self.plot-right - self.plot-left);
+
+    background: #111319;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: #30343d;
+
+    Rectangle {
+        x: root.plot-left;
+        y: root.plot-top;
+        width: root.plot-right - root.plot-left;
+        height: 1px;
+        background: #282c34;
+    }
+    Rectangle {
+        x: root.plot-left;
+        y: root.plot-top + root.plot-height / 3;
+        width: root.plot-right - root.plot-left;
+        height: 1px;
+        background: #282c34;
+    }
+    Rectangle {
+        x: root.plot-left;
+        y: root.plot-top + root.plot-height * 2 / 3;
+        width: root.plot-right - root.plot-left;
+        height: 1px;
+        background: #282c34;
+    }
+    Rectangle {
+        x: root.plot-left;
+        y: root.plot-bottom;
+        width: root.plot-right - root.plot-left;
+        height: 1px;
+        background: #282c34;
+    }
+
+    Rectangle {
+        x: root.plot-left;
+        y: root.plot-top;
+        width: 1px;
+        height: root.plot-height;
+        background: #242830;
+    }
+    Rectangle {
+        x: root.plot-left + (root.plot-right - root.plot-left) / 4;
+        y: root.plot-top;
+        width: 1px;
+        height: root.plot-height;
+        background: #242830;
+    }
+    Rectangle {
+        x: root.plot-left + (root.plot-right - root.plot-left) / 2;
+        y: root.plot-top;
+        width: 1px;
+        height: root.plot-height;
+        background: #242830;
+    }
+    Rectangle {
+        x: root.plot-left + (root.plot-right - root.plot-left) * 3 / 4;
+        y: root.plot-top;
+        width: 1px;
+        height: root.plot-height;
+        background: #242830;
+    }
+    Rectangle {
+        x: root.plot-right;
+        y: root.plot-top;
+        width: 1px;
+        height: root.plot-height;
+        background: #242830;
+    }
+
+    // The viewbox matches the graph's pixel size so path coordinates share the
+    // EnvelopePoint coordinate space. Slint fits the viewbox into the element
+    // minus the stroke width (offset by half of it), so the element is grown
+    // by one stroke width to keep the mapping exactly 1:1.
+    Path {
+        x: -self.stroke-width / 2;
+        y: -self.stroke-width / 2;
+        width: root.width + self.stroke-width;
+        height: root.height + self.stroke-width;
+        viewbox-width: root.width / 1px;
+        viewbox-height: root.height / 1px;
+        stroke: #56a7ff;
+        stroke-width: 3px;
+        MoveTo {
+            x: root.plot-left / 1px;
+            y: root.plot-bottom / 1px;
+        }
+        LineTo {
+            x: root.attack-x / 1px;
+            y: root.plot-top / 1px;
+        }
+        LineTo {
+            x: root.decay-x / 1px;
+            y: root.sustain-y / 1px;
+        }
+        LineTo {
+            x: root.release-x / 1px;
+            y: root.sustain-y / 1px;
+        }
+        LineTo {
+            x: root.plot-right / 1px;
+            y: root.plot-bottom / 1px;
+        }
+    }
+
+    EnvelopePoint {
+        x: root.attack-x - 16px;
+        y: root.plot-top - 16px;
+        value: root.attack;
+        parameter-id: 0;
+        sensitivity: root.attack-sensitivity;
+        pressed(id) => { root.pressed(id); }
+        changed(id, value) => { root.changed(id, value); }
+        released(id) => { root.released(id); }
+    }
+
+    EnvelopePoint {
+        x: root.decay-x - 16px;
+        y: root.sustain-y - 16px;
+        value: root.decay;
+        secondary-value: root.sustain-level;
+        parameter-id: 1;
+        secondary-parameter-id: 2;
+        sensitivity: root.decay-sensitivity;
+        secondary-sensitivity: root.plot-height;
+        two-dimensional: true;
+        pressed(id) => { root.pressed(id); }
+        changed(id, value) => { root.changed(id, value); }
+        secondary-changed(value) => { root.sustain-level-changed(value); }
+        released(id) => { root.released(id); }
+    }
+
+    EnvelopePoint {
+        x: root.release-x - 16px;
+        y: root.sustain-y - 16px;
+        value: root.release;
+        parameter-id: 3;
+        sensitivity: root.release-sensitivity;
+        inverted: true;
+        pressed(id) => { root.pressed(id); }
+        changed(id, value) => { root.changed(id, value); }
+        released(id) => { root.released(id); }
+    }
+
+}
+
+export component AdsrEnvelopePanel inherits Rectangle {
+    in-out property <float> attack: 0.251;
+    in-out property <float> decay: 0.549;
+    in-out property <float> sustain: 0.9;
+    in-out property <float> sustain-level: 0.501;
+    in-out property <float> release: 0.631;
+    in property <string> attack-text: "10.0 ms";
+    in property <string> decay-text: "500.0 ms";
+    in property <string> sustain-text: "-6.0 dB";
+    in property <string> release-text: "1000.0 ms";
+    callback pressed(int);
+    callback changed(int, float);
+    callback sustain-level-changed(float);
+    callback released(int);
+
+    background: #20232b;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: #30343d;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+
+        Text {
+            text: "OUTPUT ENVELOPE";
+            font-size: 11px;
+            font-weight: 700;
+            color: #9299a8;
+        }
+
+        AdsrEnvelopeGraph {
+            width: 100%;
+            height: 190px;
+            attack: root.attack;
+            decay: root.decay;
+            sustain-level: root.sustain-level;
+            release: root.release;
+            pressed(id) => { root.pressed(id); }
+            changed(id, value) => { root.changed(id, value); }
+            sustain-level-changed(value) => { root.sustain-level-changed(value); }
+            released(id) => { root.released(id); }
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: 18px;
+
+            SynthKnob {
+                value <=> root.attack;
+                label: "ATTACK";
+                value-text: root.attack-text;
+                parameter-id: 0;
+                pressed(id) => { root.pressed(id); }
+                changed(id, value) => { root.changed(id, value); }
+                released(id) => { root.released(id); }
+            }
+
+            SynthKnob {
+                value <=> root.decay;
+                label: "DECAY";
+                value-text: root.decay-text;
+                parameter-id: 1;
+                pressed(id) => { root.pressed(id); }
+                changed(id, value) => { root.changed(id, value); }
+                released(id) => { root.released(id); }
+            }
+
+            SynthKnob {
+                value <=> root.sustain;
+                label: "SUSTAIN";
+                value-text: root.sustain-text;
+                parameter-id: 2;
+                pressed(id) => { root.pressed(id); }
+                changed(id, value) => { root.changed(id, value); }
+                released(id) => { root.released(id); }
+            }
+
+            SynthKnob {
+                value <=> root.release;
+                label: "RELEASE";
+                value-text: root.release-text;
+                parameter-id: 3;
+                pressed(id) => { root.pressed(id); }
+                changed(id, value) => { root.changed(id, value); }
+                released(id) => { root.released(id); }
+            }
+        }
+    }
+}
