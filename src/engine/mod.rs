@@ -501,11 +501,13 @@ mod tests {
             mode: FilterMode::LowPass,
             cutoff_hz: 100.0,
             q: std::f32::consts::FRAC_1_SQRT_2,
+            ..Default::default()
         });
         let high_passed = render_note(FilterSettings {
             mode: FilterMode::HighPass,
             cutoff_hz: 10_000.0,
             q: std::f32::consts::FRAC_1_SQRT_2,
+            ..Default::default()
         });
         assert!(rms(&closed) < rms(&open) * 0.25);
         assert!(rms(&high_passed) < rms(&open) * 0.25);
@@ -524,6 +526,7 @@ mod tests {
                 mode: FilterMode::LowPass,
                 cutoff_hz: 300.0,
                 q: 10.0,
+                ..Default::default()
             });
             engine.set_output_envelope_settings(AdsrSettings {
                 attack: Duration::ZERO,

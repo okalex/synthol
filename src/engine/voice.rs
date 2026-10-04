@@ -195,6 +195,7 @@ impl Voice {
         self.filter.set_settings(FilterSettings {
             cutoff_hz: modulate(ModDestination::FilterCutoff, controls.filter.cutoff_hz),
             q: modulate(ModDestination::FilterQ, controls.filter.q),
+            mix: modulate(ModDestination::FilterMix, controls.filter.mix),
             ..controls.filter
         });
     }

@@ -143,11 +143,13 @@ export component SynthUi inherits Window {
     in-out property <string> filter-cutoff-text: "20.0 kHz";
     in-out property <float> filter-q: 0.5;
     in-out property <string> filter-q-text: "0.71";
+    in-out property <float> filter-mix: 1.0;
+    in-out property <string> filter-mix-text: "100 %";
     callback filter-type-selected(int);
-    // Parameter id 0 is cutoff, 1 is Q.
+    // Parameter id 0 is cutoff, 1 is Q, 2 is Mix.
     callback filter-changed(int, float);
     callback filter-released(int);
-    pure callback filter-response-path(int, float, float, float, float) -> string;
+    pure callback filter-response-path(int, float, float, float, float, float) -> string;
     in-out property <int> lfo-shape: 0;
     in-out property <float> lfo-rate: 0.575;
     in-out property <string> lfo-rate-text: "1.0 Hz";
@@ -170,7 +172,7 @@ export component SynthUi inherits Window {
     // the last oscillator's. Routing slot destinations index
     // `mod-destinations`, which editor.rs fills.
     in property <int> cutoff-mod-target: 2 * root.max-oscillators;
-    in property <[string]> mod-destinations: ["None", "Osc 1 Pitch", "Osc 1 Level", "Filter Cutoff", "Filter Q"];
+    in property <[string]> mod-destinations: ["None", "Osc 1 Pitch", "Osc 1 Level", "Filter Cutoff", "Filter Q", "Filter Mix"];
     in-out property <[ModRouteSlot]> mod-slots;
     // Per destination; see `knob_modulation` in editor.rs.
     in-out property <[KnobModulation]> knob-mods;
@@ -421,8 +423,9 @@ export component SynthUi inherits Window {
                         filter-type: root.filter-type;
                         cutoff: root.filter-cutoff;
                         q: root.filter-q;
-                        response-path(filter-type, cutoff, q, width, height) => {
-                            return root.filter-response-path(filter-type, cutoff, q, width, height);
+                        mix: root.filter-mix;
+                        response-path(filter-type, cutoff, q, mix, width, height) => {
+                            return root.filter-response-path(filter-type, cutoff, q, mix, width, height);
                         }
                     }
                 }
@@ -452,6 +455,24 @@ export component SynthUi inherits Window {
                     value-text: root.filter-q-text;
                     mod-target: root.cutoff-mod-target + 1;
                     modulation: root.knob-mods[root.cutoff-mod-target + 1];
+                    mod-drag-active: mod-handle.dragging;
+                    mod-drag-x: mod-handle.pointer-x;
+                    mod-drag-y: mod-handle.pointer-y;
+                    mod-drop-count: mod-handle.drop-count;
+                    mod-dropped(target) => { root.mod-assign(target); }
+                    changed(id, value) => { root.filter-changed(id, value); }
+                    released(id) => { root.filter-released(id); }
+                    mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                    mod-depth-released(target) => { root.mod-depth-released(target); }
+                }
+
+                SynthKnob {
+                    value: root.filter-mix;
+                    label: "MIX";
+                    parameter-id: 2;
+                    value-text: root.filter-mix-text;
+                    mod-target: root.cutoff-mod-target + 2;
+                    modulation: root.knob-mods[root.cutoff-mod-target + 2];
                     mod-drag-active: mod-handle.dragging;
                     mod-drag-x: mod-handle.pointer-x;
                     mod-drag-y: mod-handle.pointer-y;
@@ -601,7 +622,7 @@ export component SynthUi inherits Window {
                                 mod-handle := ModDragHandle { }
 
                                 Text {
-                                    text: "Drag onto PITCH, LEVEL, CUTOFF or Q · Alt-drag a knob to set depth · Shift for fine";
+                                    text: "Drag onto PITCH, LEVEL, CUTOFF, Q or MIX · Alt-drag for depth · Shift for fine";
                                     font-size: 9px;
                                     color: #6f7685;
                                     vertical-alignment: center;

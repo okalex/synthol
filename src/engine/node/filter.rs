@@ -1,7 +1,7 @@
 //! Two-pole (12 dB per octave) biquad filter using the RBJ "Audio EQ
 //! Cookbook" low-pass, high-pass, and constant 0 dB peak band-pass designs.
 
-use std::f32::consts::{FRAC_1_SQRT_2, TAU};
+use std::f32::consts::FRAC_1_SQRT_2;
 
 pub const MIN_CUTOFF_HZ: f32 = 20.0;
 pub const MAX_CUTOFF_HZ: f32 = 20_000.0;
@@ -24,6 +24,8 @@ pub struct FilterSettings {
     pub mode: FilterMode,
     pub cutoff_hz: f32,
     pub q: f32,
+    /// Minimum-phase power-response morph: 0 is bypass, 1 is fully filtered.
+    pub mix: f32,
 }
 
 impl Default for FilterSettings {
@@ -32,6 +34,7 @@ impl Default for FilterSettings {
             mode: FilterMode::LowPass,
             cutoff_hz: MAX_CUTOFF_HZ,
             q: FRAC_1_SQRT_2,
+            mix: 1.0,
         }
     }
 }
@@ -39,11 +42,11 @@ impl Default for FilterSettings {
 /// Normalized (`a0 == 1`) biquad coefficients.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BiquadCoefficients {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
 }
 
 impl Default for BiquadCoefficients {
@@ -62,31 +65,54 @@ impl Default for BiquadCoefficients {
 impl BiquadCoefficients {
     /// Designs the filter for `settings` at `sample_rate`. Cutoff and Q are
     /// clamped to their supported ranges and the cutoff is kept below
-    /// Nyquist.
+    /// Nyquist. Mix morphs the squared magnitude from unity to the wet
+    /// response, using a minimum-phase numerator and the wet filter's poles.
     pub fn new(settings: FilterSettings, sample_rate: f32) -> Self {
         if !sample_rate.is_finite() || sample_rate <= 0.0 {
             return Self::default();
         }
         let defaults = FilterSettings::default();
+        let mix = f64::from(finite_or(settings.mix, defaults.mix).clamp(0.0, 1.0));
+        if mix == 0.0 {
+            return Self::default();
+        }
         let cutoff = finite_or(settings.cutoff_hz, defaults.cutoff_hz)
             .clamp(MIN_CUTOFF_HZ, MAX_CUTOFF_HZ)
             .min(sample_rate * MAX_CUTOFF_FRACTION_OF_SAMPLE_RATE);
-        let q = finite_or(settings.q, defaults.q).clamp(MIN_Q, MAX_Q);
+        let q = f64::from(finite_or(settings.q, defaults.q).clamp(MIN_Q, MAX_Q));
 
-        let omega = TAU * cutoff / sample_rate;
+        let omega = std::f64::consts::TAU * f64::from(cutoff) / f64::from(sample_rate);
         let (sin, cos) = omega.sin_cos();
         let alpha = sin / (2.0 * q);
 
-        let (b0, b1, b2) = match settings.mode {
-            FilterMode::LowPass => {
-                let b = (1.0 - cos) / 2.0;
-                (b, 1.0 - cos, b)
+        let (b0, b1, b2) = if mix == 1.0 {
+            match settings.mode {
+                FilterMode::LowPass => {
+                    let b = (1.0 - cos) / 2.0;
+                    (b, 1.0 - cos, b)
+                }
+                FilterMode::HighPass => {
+                    let b = (1.0 + cos) / 2.0;
+                    (b, -(1.0 + cos), b)
+                }
+                FilterMode::BandPass => (alpha, 0.0, -alpha),
             }
-            FilterMode::HighPass => {
-                let b = (1.0 + cos) / 2.0;
-                (b, -(1.0 + cos), b)
-            }
-            FilterMode::BandPass => (alpha, 0.0, -alpha),
+        } else {
+            // Spectral factor of (1-mix)|D|^2 + mix|N|^2 in the
+            // normalized analog prototype. Its left-half-plane zeros make
+            // the bilinear result minimum-phase, without parallel cancellation.
+            let dry = 1.0 - mix;
+            let root_dry = dry.sqrt();
+            let damping = (dry / (q * q) + 2.0 * root_dry * (1.0 - root_dry)).sqrt();
+            let (n0, n1, n2) = match settings.mode {
+                FilterMode::LowPass => (1.0, damping, root_dry),
+                FilterMode::HighPass => (root_dry, damping, 1.0),
+                FilterMode::BandPass => (root_dry, q.recip(), root_dry),
+            };
+            let low = n0 * (1.0 - cos) / 2.0;
+            let band = n1 * sin / 2.0;
+            let high = n2 * (1.0 + cos) / 2.0;
+            (low + band + high, 2.0 * (low - high), low - band + high)
         };
         let a0 = 1.0 + alpha;
 
@@ -102,7 +128,7 @@ impl BiquadCoefficients {
     /// Linear magnitude of the filter's response at `frequency`, evaluated
     /// from the same coefficients the filter runs with.
     pub fn magnitude(&self, frequency: f32, sample_rate: f32) -> f32 {
-        let omega = TAU * frequency / sample_rate;
+        let omega = std::f64::consts::TAU * f64::from(frequency) / f64::from(sample_rate);
         let (sin1, cos1) = omega.sin_cos();
         let (sin2, cos2) = (2.0 * omega).sin_cos();
         // H(z) evaluated at z = e^{j omega}; z^-n = cos(n omega) - j sin(n omega).
@@ -110,7 +136,7 @@ impl BiquadCoefficients {
         let numerator_im = -(self.b1 * sin1 + self.b2 * sin2);
         let denominator_re = 1.0 + self.a1 * cos1 + self.a2 * cos2;
         let denominator_im = -(self.a1 * sin1 + self.a2 * sin2);
-        (numerator_re.hypot(numerator_im)) / denominator_re.hypot(denominator_im)
+        ((numerator_re.hypot(numerator_im)) / denominator_re.hypot(denominator_im)) as f32
     }
 }
 
@@ -161,8 +187,10 @@ impl Filter {
 /// Per-voice filter memory (transposed direct form II).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BiquadState {
-    s1: f32,
-    s2: f32,
+    // Double precision keeps the near pole/zero cancellation at low Mix
+    // and low cutoff accurate, especially at high sample rates.
+    s1: f64,
+    s2: f64,
 }
 
 impl BiquadState {
@@ -172,21 +200,32 @@ impl BiquadState {
 
     pub fn process_sample(&mut self, coefficients: &BiquadCoefficients, input: f32) -> f32 {
         let c = coefficients;
+        if *c == BiquadCoefficients::default() {
+            self.reset();
+            return input;
+        }
+        let input = f64::from(input);
         let output = c.b0 * input + self.s1;
         self.s1 = c.b1 * input - c.a1 * output + self.s2;
         self.s2 = c.b2 * input - c.a2 * output;
-        output
+        output as f32
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::TAU;
 
     const SAMPLE_RATE: f32 = 48_000.0;
 
     fn settings(mode: FilterMode, cutoff_hz: f32, q: f32) -> FilterSettings {
-        FilterSettings { mode, cutoff_hz, q }
+        FilterSettings {
+            mode,
+            cutoff_hz,
+            q,
+            ..Default::default()
+        }
     }
 
     fn db(magnitude: f32) -> f32 {
@@ -267,13 +306,151 @@ mod tests {
             settings(FilterMode::HighPass, 800.0, 0.7),
             settings(FilterMode::BandPass, 800.0, 4.0),
         ] {
-            for frequency in [200.0, 800.0, 3_000.0] {
-                let expected =
-                    BiquadCoefficients::new(s, SAMPLE_RATE).magnitude(frequency, SAMPLE_RATE);
-                let actual = measured_gain(s, frequency);
+            for mix in [0.0, 0.01, 0.25, 0.5, 0.9, 1.0] {
+                let s = FilterSettings { mix, ..s };
+                for frequency in [200.0, 800.0, 3_000.0] {
+                    let expected =
+                        BiquadCoefficients::new(s, SAMPLE_RATE).magnitude(frequency, SAMPLE_RATE);
+                    let actual = measured_gain(s, frequency);
+                    assert!(
+                        (actual - expected).abs() < 0.01 * expected.max(0.01),
+                        "{s:?} at {frequency} Hz: {actual} != {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mix_has_the_requested_power_response_without_cancellation_notches() {
+        for sample_rate in [22_050.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            for mode in [
+                FilterMode::LowPass,
+                FilterMode::HighPass,
+                FilterMode::BandPass,
+            ] {
+                for cutoff in [MIN_CUTOFF_HZ, 200.0, 1_000.0, MAX_CUTOFF_HZ] {
+                    for q in [MIN_Q, FRAC_1_SQRT_2, 4.0, MAX_Q] {
+                        let wet_settings = settings(mode, cutoff, q);
+                        let wet = BiquadCoefficients::new(wet_settings, sample_rate);
+                        for mix in [0.0, 1e-6, 0.01, 0.25, 0.5, 0.99, 1.0 - 1e-6, 1.0] {
+                            let mixed = BiquadCoefficients::new(
+                                FilterSettings {
+                                    mix,
+                                    ..wet_settings
+                                },
+                                sample_rate,
+                            );
+                            for step in 0..=128 {
+                                let frequency = sample_rate * 0.5 * step as f32 / 128.0;
+                                let wet_gain = f64::from(wet.magnitude(frequency, sample_rate));
+                                let expected = (1.0 - f64::from(mix)
+                                    + f64::from(mix) * wet_gain * wet_gain)
+                                    .sqrt();
+                                let actual = f64::from(mixed.magnitude(frequency, sample_rate));
+                                assert!(
+                                    (actual - expected).abs() < 2e-5 * expected.max(1e-3),
+                                    "{wet_settings:?}, rate {sample_rate}, mix {mix}, frequency {frequency}: {actual} != {expected}"
+                                );
+                                assert!(
+                                    actual + 2e-5 >= f64::from(1.0 - mix).sqrt(),
+                                    "unexpected cancellation below the dry floor"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn intermediate_mix_is_minimum_phase_and_poles_stay_stable() {
+        for mode in [
+            FilterMode::LowPass,
+            FilterMode::HighPass,
+            FilterMode::BandPass,
+        ] {
+            for sample_rate in [22_050.0, 48_000.0, 192_000.0] {
+                for cutoff in [MIN_CUTOFF_HZ, 1_000.0, MAX_CUTOFF_HZ] {
+                    for q in [MIN_Q, FRAC_1_SQRT_2, MAX_Q] {
+                        for mix in [1e-6, 0.01, 0.5, 0.99, 1.0 - 1e-6] {
+                            let c = BiquadCoefficients::new(
+                                FilterSettings {
+                                    mix,
+                                    ..settings(mode, cutoff, q)
+                                },
+                                sample_rate,
+                            );
+                            // Second-order Jury criteria: poles and zeros inside the unit circle.
+                            assert!(
+                                c.a2.abs() < 1.0
+                                    && 1.0 + c.a1 + c.a2 > 0.0
+                                    && 1.0 - c.a1 + c.a2 > 0.0
+                            );
+                            assert!(
+                                c.b2.abs() < c.b0
+                                    && c.b0 + c.b1 + c.b2 > 0.0
+                                    && c.b0 - c.b1 + c.b2 > 0.0
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_mix_is_exact_bypass_even_with_existing_filter_memory() {
+        let mut state = BiquadState::default();
+        let wet =
+            BiquadCoefficients::new(settings(FilterMode::LowPass, 1_000.0, 20.0), SAMPLE_RATE);
+        state.process_sample(&wet, 1.0);
+        assert_ne!(state.s1, 0.0);
+        for mode in [
+            FilterMode::LowPass,
+            FilterMode::HighPass,
+            FilterMode::BandPass,
+        ] {
+            let bypass = BiquadCoefficients::new(
+                FilterSettings {
+                    mix: 0.0,
+                    ..settings(mode, 200.0, 20.0)
+                },
+                SAMPLE_RATE,
+            );
+            for input in [0.0, 1.0, -1.0, 0.0123, -0.5] {
+                assert_eq!(state.process_sample(&bypass, input), input);
+            }
+        }
+        assert_eq!(state.s1, 0.0);
+        assert_eq!(state.s2, 0.0);
+    }
+
+    #[test]
+    fn mix_changes_recompute_coefficients_and_remain_finite_while_sweeping() {
+        for mode in [
+            FilterMode::LowPass,
+            FilterMode::HighPass,
+            FilterMode::BandPass,
+        ] {
+            let mut filter = Filter::default();
+            filter.prepare(SAMPLE_RATE);
+            let mut state = BiquadState::default();
+            let mut last = *filter.coefficients();
+            for index in 0..9_600 {
+                let mix = (index as f32 / 4_800.0 - 1.0).abs();
+                filter.set_settings(FilterSettings {
+                    mix,
+                    ..settings(mode, 1_000.0, 20.0)
+                });
+                assert_ne!(*filter.coefficients(), last);
+                last = *filter.coefficients();
+                let input = (TAU * 1_000.0 * index as f32 / SAMPLE_RATE).sin();
+                let output = state.process_sample(filter.coefficients(), input);
                 assert!(
-                    (actual - expected).abs() < 0.01 * expected.max(0.01),
-                    "{s:?} at {frequency} Hz: {actual} != {expected}"
+                    output.is_finite() && output.abs() < 25.0,
+                    "mix {mix}: {output}"
                 );
             }
         }
@@ -296,6 +473,29 @@ mod tests {
             invalid,
             BiquadCoefficients::new(FilterSettings::default(), SAMPLE_RATE)
         );
+        for (mix, expected) in [
+            (-1.0, 0.0),
+            (2.0, 1.0),
+            (f32::NAN, 1.0),
+            (f32::INFINITY, 1.0),
+        ] {
+            assert_eq!(
+                BiquadCoefficients::new(
+                    FilterSettings {
+                        mix,
+                        ..Default::default()
+                    },
+                    SAMPLE_RATE
+                ),
+                BiquadCoefficients::new(
+                    FilterSettings {
+                        mix: expected,
+                        ..Default::default()
+                    },
+                    SAMPLE_RATE
+                ),
+            );
+        }
     }
 
     #[test]

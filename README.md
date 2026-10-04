@@ -40,7 +40,16 @@ drawn by hand.
 
 The **Filter** row selects a 12 dB/octave (two-pole) low-pass, high-pass, or
 band-pass filter, with **Cutoff** (20 Hz to 20 kHz) and **Q** (0.1 to 20)
-knobs; all three are host-automatable. The filters are RBJ-cookbook biquads:
+knobs, plus a **Mix** knob (0% to 100%); all are host-automatable. Mix defaults
+to 100%, preserving existing sounds. At 0% the filter is exactly bypassed;
+100% uses the original filter. Intermediate values morph the filter's
+power response, rather than summing separate dry and phase-shifted wet
+signals: `|H_mix|² = (1 - mix) + mix * |H_filter|²`, where mix is 0 to 1.
+The morph uses a single minimum-phase biquad with no added latency, avoiding
+the cancellation notches that a conventional dry/wet sum can introduce.
+It still has the natural phase response of a minimum-phase filter; it is
+not a linear-phase filter. Mix reduces resonance as well as attenuation,
+and is smoothed over 20 ms. The filters are RBJ-cookbook biquads:
 low and high pass resonate above Q 0.707 (Butterworth, -3 dB at the cutoff),
 and band pass peaks at 0 dB at the cutoff, narrowing as Q rises. Every voice
 has its own filter memory. Cutoff and Q are smoothed so sweeps don't zipper.
@@ -70,7 +79,7 @@ one per voice). Because the position comes from audio processing, a
 Sync LFO only advances while the host is processing the plugin.
 
 Each LFO can modulate any oscillator's **Pitch** and **Level** and filter
-**Cutoff** and **Q**. Drag the amber **MOD** handle from the LFO Routing row onto one of
+**Cutoff**, **Q**, and **Mix**. Drag the amber **MOD** handle from the LFO Routing row onto one of
 those knobs (they light up while you drag) to route the LFO to it; to target
 another oscillator, select its tab first. A routed
 knob shows an amber arc: the faint arc covers the full swing around the knob's
@@ -86,7 +95,7 @@ The selected Modulators tab determines which LFO the handle, routing list,
 and Alt-drag depth edits control. Arcs show that LFO's depth; the live dot
 includes the combined modulation of all active LFOs. A
 new route starts at a modest depth: 1 semitone, 25% level, 1 octave of cutoff,
-or ×2 Q. The amounts are measured along each knob's own taper, so pitch moves
+×2 Q, or 25 percentage points of Mix. The amounts are measured along each knob's own taper, so pitch moves
 in semitones, cutoff in octaves, and Q multiplicatively (shown as ×/÷).
 Modulated values stay within each knob's range, and several slots targeting the
 same destination add up, including routes from different LFOs, before clamping.

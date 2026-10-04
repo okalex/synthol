@@ -22,13 +22,15 @@ pub enum ModDestination {
     FilterCutoff,
     /// Filter Q, on a log scale.
     FilterQ,
+    /// Filter strength, 0 (bypass) to 1 (fully filtered).
+    FilterMix,
 }
 
 impl ModDestination {
     /// Every destination: each oscillator's pitch and level in turn, then
     /// the filter. `index` gives a destination's position here.
-    pub const ALL: [Self; 2 * MAX_OSCILLATORS + 2] = {
-        let mut all = [Self::FilterCutoff; 2 * MAX_OSCILLATORS + 2];
+    pub const ALL: [Self; 2 * MAX_OSCILLATORS + 3] = {
+        let mut all = [Self::FilterCutoff; 2 * MAX_OSCILLATORS + 3];
         let mut oscillator = 0;
         while oscillator < MAX_OSCILLATORS {
             all[2 * oscillator] = Self::OscPitch(oscillator);
@@ -36,6 +38,7 @@ impl ModDestination {
             oscillator += 1;
         }
         all[2 * MAX_OSCILLATORS + 1] = Self::FilterQ;
+        all[2 * MAX_OSCILLATORS + 2] = Self::FilterMix;
         all
     };
 
@@ -46,6 +49,7 @@ impl ModDestination {
             Self::OscLevel(oscillator) => 2 * oscillator + 1,
             Self::FilterCutoff => 2 * MAX_OSCILLATORS,
             Self::FilterQ => 2 * MAX_OSCILLATORS + 1,
+            Self::FilterMix => 2 * MAX_OSCILLATORS + 2,
         }
     }
 
@@ -53,7 +57,7 @@ impl ModDestination {
     pub fn oscillator(self) -> Option<usize> {
         match self {
             Self::OscPitch(oscillator) | Self::OscLevel(oscillator) => Some(oscillator),
-            Self::FilterCutoff | Self::FilterQ => None,
+            Self::FilterCutoff | Self::FilterQ | Self::FilterMix => None,
         }
     }
 
@@ -68,7 +72,7 @@ impl ModDestination {
     pub fn normalize(self, value: f32) -> f32 {
         let normalized = match self {
             Self::OscPitch(_) => (value + MAX_PITCH_SEMITONES) / (2.0 * MAX_PITCH_SEMITONES),
-            Self::OscLevel(_) => value,
+            Self::OscLevel(_) | Self::FilterMix => value,
             Self::FilterCutoff => {
                 (value / MIN_CUTOFF_HZ).ln() / (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).ln()
             }
@@ -87,7 +91,7 @@ impl ModDestination {
         let normalized = normalized.clamp(0.0, 1.0);
         match self {
             Self::OscPitch(_) => (2.0 * normalized - 1.0) * MAX_PITCH_SEMITONES,
-            Self::OscLevel(_) => normalized,
+            Self::OscLevel(_) | Self::FilterMix => normalized,
             Self::FilterCutoff => MIN_CUTOFF_HZ * (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).powf(normalized),
             Self::FilterQ => MIN_Q * (MAX_Q / MIN_Q).powf(normalized),
         }

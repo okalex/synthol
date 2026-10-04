@@ -182,7 +182,7 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
     // Takes the knobs' normalized values so the plot tracks a drag
     // without waiting for the next sync.
     let state_for_ui = state.clone();
-    ui.on_filter_response_path(move |index, cutoff, q, width, height| {
+    ui.on_filter_response_path(move |index, cutoff, q, mix, width, height| {
         let params = state_for_ui.params();
         let settings = FilterSettings {
             mode: filter_mode_from_index(index),
@@ -192,6 +192,7 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
                 .range
                 .denormalize(f64::from(cutoff)) as f32,
             q: params.filter_q.info.range.denormalize(f64::from(q)) as f32,
+            mix,
         };
         slint::SharedString::from(filter_response_path(settings, width, height))
     });
@@ -456,6 +457,8 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
         ui.set_filter_q_text(slint::SharedString::from(
             state.format_param(SynthParamsParamId::FilterQ),
         ));
+        ui.set_filter_mix(state.get_param(SynthParamsParamId::FilterMix));
+        ui.set_filter_mix_text(state.format_param(SynthParamsParamId::FilterMix).into());
         let lfo_count = state.params().lfo_count.value_usize();
         ui.set_lfo_count(lfo_count as i32);
         let selected = ui.get_current_lfo() as usize;
@@ -822,6 +825,7 @@ fn filter_parameter(id: i32) -> Option<SynthParamsParamId> {
     match id {
         0 => Some(SynthParamsParamId::FilterCutoff),
         1 => Some(SynthParamsParamId::FilterQ),
+        2 => Some(SynthParamsParamId::FilterMix),
         _ => None,
     }
 }
@@ -886,6 +890,7 @@ fn destination_parameter(destination: ModDestination) -> SynthParamsParamId {
         ModDestination::OscLevel(index) => OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)].level,
         ModDestination::FilterCutoff => SynthParamsParamId::FilterCutoff,
         ModDestination::FilterQ => SynthParamsParamId::FilterQ,
+        ModDestination::FilterMix => SynthParamsParamId::FilterMix,
     }
 }
 
@@ -917,7 +922,11 @@ fn dropdown_destinations(oscillators: usize) -> impl Iterator<Item = ModDestinat
                 ModDestination::OscLevel(index),
             ]
         })
-        .chain([ModDestination::FilterCutoff, ModDestination::FilterQ])
+        .chain([
+            ModDestination::FilterCutoff,
+            ModDestination::FilterQ,
+            ModDestination::FilterMix,
+        ])
 }
 
 /// A destination's index in `destination_options(oscillators)`.
@@ -976,7 +985,7 @@ fn amount_to_normalized(amount: f32) -> f64 {
 fn default_mod_amount(destination: ModDestination) -> f32 {
     match destination {
         ModDestination::OscPitch(_) => 1.0 / (2.0 * MAX_PITCH_SEMITONES),
-        ModDestination::OscLevel(_) => 0.25,
+        ModDestination::OscLevel(_) | ModDestination::FilterMix => 0.25,
         ModDestination::FilterCutoff => 1.0 / (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).log2(),
         ModDestination::FilterQ => 1.0 / (MAX_Q / MIN_Q).log2(),
     }
@@ -989,7 +998,9 @@ fn format_mod_amount(destination: ModDestination, amount: f32) -> String {
         ModDestination::OscPitch(_) => {
             format!("{:+.2} st", amount * 2.0 * MAX_PITCH_SEMITONES)
         }
-        ModDestination::OscLevel(_) => format!("{:+.0} %", amount * 100.0),
+        ModDestination::OscLevel(_) | ModDestination::FilterMix => {
+            format!("{:+.0} %", amount * 100.0)
+        }
         ModDestination::FilterCutoff => {
             format!(
                 "{:+.2} oct",
@@ -1304,6 +1315,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn filter_mix_knob_routing_and_response_are_wired() {
+        use slint::ComponentHandle;
+        truce_slint::platform::ensure_platform();
+        let window = truce_slint::platform::create_slint_window();
+        window.set_size(slint::PhysicalSize::new(720, 1010));
+        let ui = SynthUi::new().unwrap();
+        let params = Arc::new(SynthParams::default());
+        let state = editor_test_context(params.clone());
+        let sync = setup_editor(state.clone(), ui.clone_strong());
+        sync(&state);
+        assert_eq!(ui.get_filter_mix(), 1.0);
+        assert_eq!(ui.get_filter_mix_text(), "100 %");
+        assert_eq!(filter_parameter(2), Some(SynthParamsParamId::FilterMix));
+        ui.invoke_filter_changed(2, 0.25);
+        ui.invoke_filter_released(2);
+        sync(&state);
+        assert_eq!(
+            params.get_plain(SynthParamsParamId::FilterMix.into()),
+            Some(25.0)
+        );
+        assert_eq!(ui.get_filter_mix(), 0.25);
+        assert_eq!(ui.get_filter_mix_text(), "25 %");
+
+        let path = ui.invoke_filter_response_path(0, 0.2, 0.5, 0.0, 210.0, 64.0);
+        assert!(
+            points(&path)
+                .iter()
+                .all(|(_, y)| (*y - 64.0 / 3.0).abs() < 0.01)
+        );
+        let wet_path = ui.invoke_filter_response_path(0, 0.2, 0.5, 1.0, 210.0, 64.0);
+        assert_ne!(path, wet_path);
+        ui.invoke_lfo_add();
+        sync(&state);
+        ui.invoke_mod_assign(ModDestination::FilterMix.index() as i32);
+        sync(&state);
+        assert_eq!(
+            read_routes(&state, 0)[0],
+            ModRoute {
+                destination: Some(ModDestination::FilterMix),
+                amount: 0.25,
+            }
+        );
+        assert_eq!(ui.get_mod_slots().row_data(0).unwrap().amount_text, "+25 %");
+        ui.invoke_mod_depth_changed(ModDestination::FilterMix.index() as i32, -0.1);
+        ui.invoke_mod_depth_released(ModDestination::FilterMix.index() as i32);
+        sync(&state);
+        assert!((read_routes(&state, 0)[0].amount + 0.1).abs() < 1e-6);
+        ui.show().unwrap();
+        let mut pixels =
+            vec![slint::platform::software_renderer::PremultipliedRgbaColor::default(); 720 * 1010];
+        assert!(window.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 720);
+        }));
+    }
+
     fn points(commands: &str) -> Vec<(f32, f32)> {
         commands
             .split_whitespace()
@@ -1398,7 +1465,12 @@ mod tests {
 
     fn response_points(mode: FilterMode, cutoff_hz: f32, q: f32) -> Vec<(f32, f32)> {
         points(&filter_response_path(
-            FilterSettings { mode, cutoff_hz, q },
+            FilterSettings {
+                mode,
+                cutoff_hz,
+                q,
+                ..Default::default()
+            },
             300.0,
             72.0,
         ))
@@ -1557,11 +1629,12 @@ mod tests {
         assert!(slots[1].amount_text.is_empty());
         assert_eq!(
             destination_to_normalized(Some(ModDestination::OscLevel(0))),
-            0.2
+            2.0 / 11.0
         );
         assert_eq!(mod_target(3), Some(ModDestination::OscLevel(1)));
         assert_eq!(mod_target(9), Some(ModDestination::FilterQ));
-        assert_eq!(mod_target(10), None);
+        assert_eq!(mod_target(10), Some(ModDestination::FilterMix));
+        assert_eq!(mod_target(11), None);
         assert_eq!(mod_slot(-1), None);
     }
 
@@ -1574,11 +1647,12 @@ mod tests {
                 "Osc 1 Pitch",
                 "Osc 1 Level",
                 "Filter Cutoff",
-                "Filter Q"
+                "Filter Q",
+                "Filter Mix"
             ]
         );
         let options = destination_options(3);
-        assert_eq!(options.len(), 9);
+        assert_eq!(options.len(), 10);
         assert_eq!(options[5], "Osc 3 Pitch");
         assert_eq!(options[7], "Filter Cutoff");
 

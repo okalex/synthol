@@ -108,6 +108,8 @@ pub enum ModDestinationType {
     Osc4Pitch,
     #[name = "Osc 4 Level"]
     Osc4Level,
+    #[name = "Filter Mix"]
+    FilterMix,
 }
 
 impl From<ModDestinationType> for Option<ModDestination> {
@@ -124,6 +126,7 @@ impl From<ModDestinationType> for Option<ModDestination> {
             ModDestinationType::Osc3Level => ModDestination::OscLevel(2),
             ModDestinationType::Osc4Pitch => ModDestination::OscPitch(3),
             ModDestinationType::Osc4Level => ModDestination::OscLevel(3),
+            ModDestinationType::FilterMix => ModDestination::FilterMix,
         })
     }
 }
@@ -136,6 +139,7 @@ impl From<Option<ModDestination>> for ModDestinationType {
             Some(ModDestination::OscLevel(0)) => Self::Osc1Level,
             Some(ModDestination::FilterCutoff) => Self::FilterCutoff,
             Some(ModDestination::FilterQ) => Self::FilterQ,
+            Some(ModDestination::FilterMix) => Self::FilterMix,
             Some(ModDestination::OscPitch(1)) => Self::Osc2Pitch,
             Some(ModDestination::OscLevel(1)) => Self::Osc2Level,
             Some(ModDestination::OscPitch(2)) => Self::Osc3Pitch,
@@ -617,6 +621,15 @@ pub struct SynthParams {
     pub lfo_4_position_7: MeterSlot,
     #[meter]
     pub lfo_4_newest: MeterSlot,
+    #[param(
+        name = "Filter Mix",
+        range = "linear(0, 100)",
+        default = 100.0,
+        unit = "%",
+        smooth = "linear(20)",
+        format = "format_percent"
+    )]
+    pub filter_mix: FloatParam,
 }
 
 #[derive(Clone, Copy)]
@@ -1026,6 +1039,7 @@ impl PluginLogic for Synth {
                 mode: filter_mode,
                 cutoff_hz: params.filter_cutoff.read(),
                 q: params.filter_q.read(),
+                mix: params.filter_mix.read() / 100.0,
             });
             // Inactive oscillators are read too so their smoothers stay
             // current for when they're added.

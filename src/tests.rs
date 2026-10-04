@@ -498,6 +498,11 @@ fn modulation_ranges_match_the_destination_parameters() {
             1.0,
         ),
         (ModDestination::FilterQ, SynthParamsParamId::FilterQ, 1.0),
+        (
+            ModDestination::FilterMix,
+            SynthParamsParamId::FilterMix,
+            100.0,
+        ),
     ];
     for (destination, id, scale) in destinations {
         let id: u32 = id.into();
@@ -565,6 +570,7 @@ fn routing_slots_list_each_destination() {
             "Osc 3 Level",
             "Osc 4 Pitch",
             "Osc 4 Level",
+            "Filter Mix",
         ]
     );
     assert_eq!(mod_destination_from_index(0), None);
@@ -608,7 +614,7 @@ fn a_routed_lfo_modulates_the_sound() {
             .output[0]
             .clone()
     };
-    let osc_level = 0.2;
+    let osc_level = 2.0 / 11.0;
     // Amounts are normalized: 0.5 is 0 %, 0.0 is -100 %.
     let reference = render(0.0, 0.5);
     // A routed slot with no depth, or depth with no destination, is inert.
@@ -682,7 +688,7 @@ fn dynamic_lfos_round_trip_saved_parameter_values() {
         params.set_normalized(ids.rate.into(), 0.2 * index as f64);
         params.set_normalized(ids.mode.into(), (index % 2) as f64);
         for slot in 0..crate::engine::MOD_SLOTS {
-            params.set_normalized(ids.destinations[slot].into(), (slot + 1) as f64 / 10.0);
+            params.set_normalized(ids.destinations[slot].into(), (slot + 1) as f64 / 11.0);
             params.set_normalized(ids.amounts[slot].into(), 0.1 * (index + slot) as f64);
         }
     }
@@ -711,6 +717,84 @@ fn dynamic_lfos_round_trip_saved_parameter_values() {
             expected,
             "existing parameter IDs must stay stable"
         );
+    }
+}
+
+#[test]
+fn filter_mix_parameter_defaults_to_wet_and_bypasses_at_zero() {
+    use crate::plugin::{SynthParams, SynthParamsParamId};
+    use std::time::Duration;
+    use truce::prelude::*;
+    use truce_test::driver;
+
+    let params = SynthParams::default();
+    let id = SynthParamsParamId::FilterMix;
+    assert_eq!(params.get_plain(id.into()), Some(100.0));
+    assert_eq!(
+        params.format_value(id.into(), 50.0).as_deref(),
+        Some("50 %")
+    );
+    let render = |mode, cutoff, q, mix| {
+        driver!(Plugin)
+            .duration(Duration::from_millis(100))
+            .set_param(SynthParamsParamId::Attack, 0.0)
+            .set_param(SynthParamsParamId::FilterType, mode)
+            .set_param(SynthParamsParamId::FilterCutoff, cutoff)
+            .set_param(SynthParamsParamId::FilterQ, q)
+            .set_param(id, mix)
+            .script(|script| script.note_on(69, 1.0))
+            .run()
+            .output[0]
+            .clone()
+    };
+    let dry = render(0.0, 0.0, 1.0, 0.0);
+    for mode in [0.0, 0.5, 1.0] {
+        assert_eq!(render(mode, 1.0, 0.0, 0.0), dry);
+        assert_eq!(render(mode, 0.0, 1.0, 0.0), dry);
+    }
+    let wet = render(0.0, 0.0, 0.5, 1.0);
+    let half = render(0.0, 0.0, 0.5, 0.5);
+    let energy = |samples: &[f32]| samples[2_000..].iter().map(|s| s * s).sum::<f32>();
+    assert!(energy(&wet) < energy(&dry) * 0.01);
+    assert!((energy(&half) / energy(&dry) - 0.5).abs() < 0.03);
+    params.set_normalized(id.into(), 0.25);
+    let (ids, values) = params.collect_values();
+    let restored = SynthParams::default();
+    restored.restore_values(&ids.into_iter().zip(values).collect::<Vec<_>>());
+    assert_eq!(restored.get_plain(id.into()), Some(25.0));
+}
+
+#[test]
+fn every_lfo_can_modulate_filter_mix() {
+    use crate::engine::ModDestination;
+    use crate::plugin::{
+        LFO_PARAMS, ModDestinationType, SynthParamsParamId, mod_destination_index,
+    };
+    use std::time::Duration;
+    use truce::prelude::*;
+    use truce_test::driver;
+
+    let destination = f64::from(mod_destination_index(Some(ModDestination::FilterMix)))
+        / (ModDestinationType::variant_count() - 1) as f64;
+    for ids in LFO_PARAMS {
+        let render = |amount| {
+            driver!(Plugin)
+                .duration(Duration::from_millis(100))
+                .set_param(SynthParamsParamId::Attack, 0.0)
+                .set_param(SynthParamsParamId::FilterCutoff, 0.0)
+                .set_param(SynthParamsParamId::LfoCount, 1.0)
+                .set_param(ids.shape, 1.0 / 3.0)
+                .set_param(ids.destinations[0], destination)
+                .set_param(ids.amounts[0], amount)
+                .script(|script| script.note_on(69, 1.0))
+                .run()
+                .output[0]
+                .clone()
+        };
+        let wet = render(0.5);
+        let bypass = render(0.0);
+        let energy = |samples: &[f32]| samples[2_000..].iter().map(|s| s * s).sum::<f32>();
+        assert!(energy(&bypass) > energy(&wet) * 100.0);
     }
 }
 
@@ -771,10 +855,10 @@ fn an_lfo_can_modulate_a_later_oscillator() {
     };
     let energy = |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>();
     let reference = render(0.0, 0.5);
-    // Osc 2 Level is destination index 6 of 10.
-    let osc_2_level = 0.6;
+    // Osc 2 Level keeps destination index 6.
+    let osc_2_level = 6.0 / 11.0;
     let modulated = render(osc_2_level, 0.0);
     assert!(energy(&modulated) < energy(&reference) * 0.8);
     // A route to an inactive oscillator (Osc 3 Level) changes nothing.
-    assert_eq!(render(0.8, 0.0), reference);
+    assert_eq!(render(8.0 / 11.0, 0.0), reference);
 }
