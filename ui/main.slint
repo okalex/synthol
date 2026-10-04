@@ -152,6 +152,12 @@ export component SynthUi inherits Window {
     in-out property <float> lfo-rate: 0.575;
     in-out property <string> lfo-rate-text: "1.0 Hz";
     in-out property <int> lfo-mode: 0;
+    in property <int> lfo-count: 0;
+    in property <int> max-lfos: 4;
+    in-out property <int> selected-lfo: 0;
+    out property <int> current-lfo: max(0, min(root.selected-lfo, root.lfo-count - 1));
+    callback lfo-add();
+    callback lfo-remove(int);
     // One marker per voice slot; see `lfo_markers` in editor.rs.
     in-out property <[PositionMarker]> lfo-markers;
     callback lfo-shape-selected(int);
@@ -458,107 +464,165 @@ export component SynthUi inherits Window {
                 }
             }
 
-            HorizontalLayout {
-                spacing: 12px;
-                alignment: start;
-
-                Text {
-                    text: "LFO";
-                    font-size: 10px;
-                    font-weight: 700;
-                    color: #9299a8;
-                    vertical-alignment: center;
-                }
-
-                VerticalLayout {
-                    alignment: center;
-
-                    Dropdown {
-                        options: ["Sine", "Square", "Triangle", "Sawtooth"];
-                        selected-index: root.lfo-shape;
-                        selected(index) => { root.lfo-shape-selected(index); }
-                    }
-                }
-
-                VerticalLayout {
-                    alignment: center;
-
-                    WaveformDisplay {
-                        waveform: root.lfo-shape;
-                        markers: root.lfo-markers;
-                        cycle-path(waveform, _, width, height) => {
-                            return root.lfo-cycle-path(waveform, width, height);
-                        }
-                    }
-                }
-
-                SynthKnob {
-                    value: root.lfo-rate;
-                    label: "RATE";
-                    value-text: root.lfo-rate-text;
-                    changed(_, value) => { root.lfo-rate-changed(value); }
-                    released(_) => { root.lfo-rate-released(); }
-                }
-
-                Rectangle { width: 16px; }
-
-                Text {
-                    text: "MODE";
-                    font-size: 10px;
-                    font-weight: 700;
-                    color: #9299a8;
-                    vertical-alignment: center;
-                }
-
-                VerticalLayout {
-                    alignment: center;
-
-                    Dropdown {
-                        width: 88px;
-                        options: ["Trigger", "Sync"];
-                        selected-index: root.lfo-mode;
-                        selected(index) => { root.lfo-mode-selected(index); }
-                    }
-                }
-            }
-
             VerticalLayout {
-                spacing: 8px;
+                spacing: 0px;
 
                 HorizontalLayout {
                     spacing: 12px;
                     alignment: start;
-
                     Text {
-                        text: "LFO ROUTING";
+                        text: "MODULATORS";
                         font-size: 10px;
                         font-weight: 700;
                         color: #9299a8;
                         vertical-alignment: center;
                     }
-
-                    mod-handle := ModDragHandle { }
-
-                    Text {
-                        text: "Drag onto PITCH, LEVEL, CUTOFF or Q · Alt-drag a knob to set depth · Shift for fine";
-                        font-size: 9px;
-                        color: #6f7685;
-                        vertical-alignment: center;
+                    if root.lfo-count < root.max-lfos: TextButton {
+                        text: "+ ADD";
+                        clicked => {
+                            root.selected-lfo = root.lfo-count;
+                            root.lfo-add();
+                        }
                     }
                 }
 
-                Rectangle {
-                    height: 62px;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    spacing: 2px;
+                    alignment: start;
+                    for index in root.lfo-count: TabButton {
+                        text: "LFO " + (index + 1);
+                        selected: index == root.current-lfo;
+                        closable: true;
+                        clicked => { root.selected-lfo = index; }
+                        close => {
+                            if root.selected-lfo > index {
+                                root.selected-lfo -= 1;
+                            }
+                            root.lfo-remove(index);
+                        }
+                    }
+                }
 
-                    for slot[index] in root.mod-slots: ModRouteRow {
-                        x: (parent.width - 672px) / 2 + mod(index, 2) * 342px;
-                        y: floor(index / 2) * 34px;
-                        slot: slot;
-                        destinations: root.mod-destinations;
-                        destination-selected(destination) => { root.mod-destination-selected(index, destination); }
-                        amount-changed(amount) => { root.mod-amount-changed(index, amount); }
-                        amount-released => { root.mod-amount-released(index); }
-                        remove => { root.mod-remove(index); }
+                if root.lfo-count == 0: Text {
+                    text: "No modulators. Click + ADD to create an LFO.";
+                    font-size: 10px;
+                    color: #6f7685;
+                    height: 32px;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    background: #20232b;
+                    border-radius: 8px;
+                    visible: root.lfo-count > 0;
+                    min-height: 0px;
+                    max-height: root.lfo-count > 0 ? 1000px : 0px;
+                    vertical-stretch: 0;
+
+                    VerticalLayout {
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: start;
+
+                            VerticalLayout {
+                                alignment: center;
+
+                                Dropdown {
+                                    options: ["Sine", "Square", "Triangle", "Sawtooth"];
+                                    selected-index: root.lfo-shape;
+                                    selected(index) => { root.lfo-shape-selected(index); }
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+
+                                WaveformDisplay {
+                                    waveform: root.lfo-shape;
+                                    markers: root.lfo-markers;
+                                    cycle-path(waveform, _, width, height) => {
+                                        return root.lfo-cycle-path(waveform, width, height);
+                                    }
+                                }
+                            }
+
+                            SynthKnob {
+                                value: root.lfo-rate;
+                                label: "RATE";
+                                value-text: root.lfo-rate-text;
+                                changed(_, value) => { root.lfo-rate-changed(value); }
+                                released(_) => { root.lfo-rate-released(); }
+                            }
+
+                            Rectangle { width: 16px; }
+
+                            Text {
+                                text: "MODE";
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: #9299a8;
+                                vertical-alignment: center;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+
+                                Dropdown {
+                                    width: 88px;
+                                    options: ["Trigger", "Sync"];
+                                    selected-index: root.lfo-mode;
+                                    selected(index) => { root.lfo-mode-selected(index); }
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 12px;
+                                alignment: start;
+
+                                Text {
+                                    text: "ROUTING";
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    color: #9299a8;
+                                    vertical-alignment: center;
+                                }
+
+                                mod-handle := ModDragHandle { }
+
+                                Text {
+                                    text: "Drag onto PITCH, LEVEL, CUTOFF or Q · Alt-drag a knob to set depth · Shift for fine";
+                                    font-size: 9px;
+                                    color: #6f7685;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Rectangle {
+                                height: 62px;
+
+                                for slot[index] in root.mod-slots: ModRouteRow {
+                                    x: (parent.width - 672px) / 2 + mod(index, 2) * 342px;
+                                    y: floor(index / 2) * 34px;
+                                    slot: slot;
+                                    destinations: root.mod-destinations;
+                                    destination-selected(destination) => { root.mod-destination-selected(index, destination); }
+                                    amount-changed(amount) => { root.mod-amount-changed(index, amount); }
+                                    amount-released => { root.mod-amount-released(index); }
+                                    remove => { root.mod-remove(index); }
+                                }
+                            }
+                        }
                     }
                 }
             }

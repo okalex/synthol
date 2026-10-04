@@ -50,20 +50,26 @@ axis, computed from the same coefficients the DSP uses and updating live as
 the controls move. The editor doesn't know the host sample rate, so the plot
 assumes 48 kHz; near Nyquist the real response can differ slightly.
 
-The **LFO** row controls a low-frequency oscillator. A dropdown selects its shape (sine, square, triangle, or sawtooth, without
+The tabbed **Modulators** group starts empty. **+ Add** creates an LFO and opens
+its tab, up to four LFOs. Each tab's × button removes that LFO, including the
+last one; later LFOs and their routes move up to fill the gap. Newly added LFOs
+start with default controls and no routes. The host-automatable **LFOs**
+parameter controls the active count (0 to 4).
+
+Each LFO has independent controls and four routing slots. A dropdown selects its shape (sine, square, triangle, or sawtooth, without
 band-limiting), a **Rate** knob sets 0.01 Hz to 30 Hz on a log taper, and a
 **Mode** dropdown selects **Trigger** or **Sync**; all three are
 host-automatable. In Trigger mode every note gets its own LFO, which starts
 from 0° when that note is pressed and stops when that note's release ends, so
 a note played later starts a fresh cycle while earlier notes' LFOs keep
 running. In Sync mode a single shared LFO runs continuously and ignores notes.
-A plot shows one cycle of the shape. Vertical lines mark the current
+A plot in the selected tab shows one cycle of its shape. Vertical lines mark the current
 positions, updated every editor frame from the audio thread: the most
 recently pressed note's line is solid and older notes' lines are faint (up to
 one per voice). Because the position comes from audio processing, a
 Sync LFO only advances while the host is processing the plugin.
 
-The LFO can modulate any oscillator's **Pitch** and **Level** and filter
+Each LFO can modulate any oscillator's **Pitch** and **Level** and filter
 **Cutoff** and **Q**. Drag the amber **MOD** handle from the LFO Routing row onto one of
 those knobs (they light up while you drag) to route the LFO to it; to target
 another oscillator, select its tab first. A routed
@@ -75,16 +81,25 @@ hold Shift for fine control. The routing list below the handle shows the four
 routing slots, each a host-automatable **Destination** and bipolar **Amount**
 (-100% to 100% of the destination's knob range). Each slot has a destination
 dropdown (listing the pitch and level of every active oscillator), an amount slider (Shift-drag for fine control, double-click to reset),
-the depth in the destination's units, and a × button that clears the slot. A
+the depth in the destination's units, and a × button that clears the slot.
+The selected Modulators tab determines which LFO the handle, routing list,
+and Alt-drag depth edits control. Arcs show that LFO's depth; the live dot
+includes the combined modulation of all active LFOs. A
 new route starts at a modest depth: 1 semitone, 25% level, 1 octave of cutoff,
 or ×2 Q. The amounts are measured along each knob's own taper, so pitch moves
 in semitones, cutoff in octaves, and Q multiplicatively (shown as ×/÷).
 Modulated values stay within each knob's range, and several slots targeting the
-same destination add up. Every note is modulated by its own LFO in Trigger mode
+same destination add up, including routes from different LFOs, before clamping.
+Every note is modulated by its own LFO in Trigger mode
 and by the shared LFO in Sync mode, and each voice has its own filter, so
 modulating the cutoff doesn't affect other notes. Removing an oscillator clears
 the routes that target it, and routes to later oscillators follow them as they
 move up.
+
+Existing oscillator and first-LFO parameter IDs are retained. Sessions saved
+before the LFO count parameter existed load with no active LFOs; add the first
+LFO by setting the host's **LFOs** parameter to 1 to reactivate its saved routes
+without resetting them.
 
 The synth has no effects yet. The Slint editor
 currently provides a reusable ADSR graph/knob panel for the output envelope,

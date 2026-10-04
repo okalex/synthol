@@ -599,6 +599,7 @@ fn a_routed_lfo_modulates_the_sound() {
         driver!(Plugin)
             .duration(Duration::from_millis(100))
             .set_param(SynthParamsParamId::Attack, 0.0)
+            .set_param(SynthParamsParamId::LfoCount, 0.25)
             .set_param(SynthParamsParamId::LfoRate, 0.9)
             .set_param(SynthParamsParamId::Mod2Destination, destination)
             .set_param(SynthParamsParamId::Mod2Amount, amount)
@@ -618,6 +619,99 @@ fn a_routed_lfo_modulates_the_sound() {
     assert_ne!(modulated, reference);
     let energy = |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>();
     assert!(energy(&modulated) < energy(&reference) * 0.8);
+}
+
+#[test]
+fn every_lfo_has_independent_host_parameters_and_routes() {
+    use crate::engine::{MAX_LFOS, ModDestination};
+    use crate::plugin::{
+        LFO_PARAMS, ModDestinationType, SynthParams, SynthParamsParamId, mod_destination_index,
+    };
+    use std::time::Duration;
+    use truce::prelude::*;
+    use truce_test::driver;
+
+    let params = SynthParams::default();
+    assert_eq!(params.lfo_count.value_usize(), 0);
+    for count in 0..=MAX_LFOS {
+        params.set_normalized(
+            SynthParamsParamId::LfoCount.into(),
+            count as f64 / MAX_LFOS as f64,
+        );
+        assert_eq!(params.lfo_count.value_usize(), count);
+    }
+    let destination = f64::from(mod_destination_index(Some(ModDestination::OscLevel(0))))
+        / (ModDestinationType::variant_count() - 1) as f64;
+    for (index, ids) in LFO_PARAMS.iter().enumerate() {
+        assert_eq!(params.get_plain(ids.rate.into()), Some(1.0));
+        let render = |count, route_lfo: usize| {
+            driver!(Plugin)
+                .duration(Duration::from_millis(100))
+                .set_param(SynthParamsParamId::Attack, 0.0)
+                .set_param(SynthParamsParamId::LfoCount, count)
+                .set_param(LFO_PARAMS[route_lfo].rate, 0.9)
+                .set_param(LFO_PARAMS[route_lfo].destinations[0], destination)
+                .set_param(LFO_PARAMS[route_lfo].amounts[0], 0.0)
+                .script(|script| script.note_on(57, 1.0))
+                .run()
+                .output[0]
+                .clone()
+        };
+        let reference = render(0.0, index);
+        let active = render((index + 1) as f64 / MAX_LFOS as f64, index);
+        let energy = |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>();
+        assert!(
+            energy(&active) < energy(&reference) * 0.8,
+            "LFO {}",
+            index + 1
+        );
+        if index > 0 {
+            assert_eq!(render(index as f64 / MAX_LFOS as f64, index), reference);
+        }
+    }
+}
+
+#[test]
+fn dynamic_lfos_round_trip_saved_parameter_values() {
+    use crate::plugin::{LFO_PARAMS, SynthParams, SynthParamsParamId};
+    use truce::prelude::*;
+
+    let params = SynthParams::default();
+    for (index, ids) in LFO_PARAMS.iter().enumerate() {
+        params.set_normalized(ids.shape.into(), index as f64 / 3.0);
+        params.set_normalized(ids.rate.into(), 0.2 * index as f64);
+        params.set_normalized(ids.mode.into(), (index % 2) as f64);
+        for slot in 0..crate::engine::MOD_SLOTS {
+            params.set_normalized(ids.destinations[slot].into(), (slot + 1) as f64 / 10.0);
+            params.set_normalized(ids.amounts[slot].into(), 0.1 * (index + slot) as f64);
+        }
+    }
+    for count in 0..=crate::engine::MAX_LFOS {
+        params.set_normalized(SynthParamsParamId::LfoCount.into(), count as f64 / 4.0);
+        let (ids, values) = params.collect_values();
+        let stored: Vec<_> = ids.into_iter().zip(values).collect();
+        let restored = SynthParams::default();
+        restored.restore_values(&stored);
+        assert_eq!(restored.lfo_count.value_usize(), count);
+        for ids in LFO_PARAMS {
+            for id in ids.all() {
+                assert_eq!(restored.get_plain(id.into()), params.get_plain(id.into()));
+            }
+        }
+    }
+    for (id, expected) in [
+        (SynthParamsParamId::Osc1Type, 8_919_309),
+        (SynthParamsParamId::LfoShape, 9_677_462),
+        (SynthParamsParamId::Mod1Destination, 10_410_336),
+        (SynthParamsParamId::OscCount, 4_815_296),
+        (SynthParamsParamId::Osc4Level, 7_313_262),
+    ] {
+        assert_eq!(
+            u32::from(id),
+            expected,
+            "existing parameter IDs must stay stable"
+        );
+    }
 }
 
 #[test]
@@ -666,6 +760,7 @@ fn an_lfo_can_modulate_a_later_oscillator() {
             .set_param(SynthParamsParamId::Attack, 0.0)
             .set_param(SynthParamsParamId::OscCount, 1.0 / 3.0)
             .set_param(SynthParamsParamId::Osc1Level, 0.0)
+            .set_param(SynthParamsParamId::LfoCount, 0.25)
             .set_param(SynthParamsParamId::LfoRate, 0.9)
             .set_param(SynthParamsParamId::Mod1Destination, destination)
             .set_param(SynthParamsParamId::Mod1Amount, amount)

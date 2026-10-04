@@ -6,8 +6,8 @@ use truce::prelude::*;
 use crate::editor;
 use crate::engine::node::envelope::AdsrSettings;
 use crate::engine::{
-    FilterMode, FilterSettings, LfoMode, LfoPositions, LfoSettings, MAX_OSCILLATORS, MAX_VOICES,
-    MOD_SLOTS, MidiEvent, ModDestination, ModRoute, SynthEngine, Waveform,
+    FilterMode, FilterSettings, LfoMode, LfoPositions, LfoSettings, MAX_LFOS, MAX_OSCILLATORS,
+    MAX_VOICES, MOD_SLOTS, MidiEvent, ModDestination, ModRoute, SynthEngine, Waveform,
 };
 
 #[derive(ParamEnum)]
@@ -182,9 +182,8 @@ pub struct SynthParams {
     pub release: FloatParam,
     #[param(name = "Voices", range = "discrete(1, 8)", default = 8)]
     pub voices: IntParam,
-    // Oscillator 1. Parameter ids follow declaration order, so oscillators
-    // added later are declared after the routing slots to keep saved
-    // sessions loading. See `OSCILLATOR_PARAMS`.
+    // Keep the original oscillator and LFO field names: Truce derives
+    // stable parameter IDs from them. See `OSCILLATOR_PARAMS` and `LFO_PARAMS`.
     #[param(name = "Osc 1 Type", default = 0)]
     pub osc_1_type: EnumParam<OscillatorType>,
     #[param(
@@ -394,7 +393,350 @@ pub struct SynthParams {
     /// The slot of the most recently started LFO; see `encode_lfo_newest`.
     #[meter]
     pub lfo_newest: MeterSlot,
+    #[param(name = "LFOs", range = "discrete(0, 4)", default = 0)]
+    pub lfo_count: IntParam,
+    #[param(name = "LFO 2 Shape", default = 0)]
+    pub lfo_2_shape: EnumParam<LfoShapeType>,
+    #[param(
+        name = "LFO 2 Rate",
+        range = "log(0.01, 30)",
+        default = 1.0,
+        unit = "Hz",
+        format = "format_lfo_rate"
+    )]
+    pub lfo_2_rate: FloatParam,
+    #[param(name = "LFO 2 Mode", default = 0)]
+    pub lfo_2_mode: EnumParam<LfoModeType>,
+    #[param(name = "LFO 2 Route 1 Destination", default = 0)]
+    pub lfo_2_mod_1_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 2 Route 1 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_2_mod_1_amount: FloatParam,
+    #[param(name = "LFO 2 Route 2 Destination", default = 0)]
+    pub lfo_2_mod_2_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 2 Route 2 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_2_mod_2_amount: FloatParam,
+    #[param(name = "LFO 2 Route 3 Destination", default = 0)]
+    pub lfo_2_mod_3_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 2 Route 3 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_2_mod_3_amount: FloatParam,
+    #[param(name = "LFO 2 Route 4 Destination", default = 0)]
+    pub lfo_2_mod_4_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 2 Route 4 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_2_mod_4_amount: FloatParam,
+    #[param(name = "LFO 3 Shape", default = 0)]
+    pub lfo_3_shape: EnumParam<LfoShapeType>,
+    #[param(
+        name = "LFO 3 Rate",
+        range = "log(0.01, 30)",
+        default = 1.0,
+        unit = "Hz",
+        format = "format_lfo_rate"
+    )]
+    pub lfo_3_rate: FloatParam,
+    #[param(name = "LFO 3 Mode", default = 0)]
+    pub lfo_3_mode: EnumParam<LfoModeType>,
+    #[param(name = "LFO 3 Route 1 Destination", default = 0)]
+    pub lfo_3_mod_1_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 3 Route 1 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_3_mod_1_amount: FloatParam,
+    #[param(name = "LFO 3 Route 2 Destination", default = 0)]
+    pub lfo_3_mod_2_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 3 Route 2 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_3_mod_2_amount: FloatParam,
+    #[param(name = "LFO 3 Route 3 Destination", default = 0)]
+    pub lfo_3_mod_3_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 3 Route 3 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_3_mod_3_amount: FloatParam,
+    #[param(name = "LFO 3 Route 4 Destination", default = 0)]
+    pub lfo_3_mod_4_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 3 Route 4 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_3_mod_4_amount: FloatParam,
+    #[param(name = "LFO 4 Shape", default = 0)]
+    pub lfo_4_shape: EnumParam<LfoShapeType>,
+    #[param(
+        name = "LFO 4 Rate",
+        range = "log(0.01, 30)",
+        default = 1.0,
+        unit = "Hz",
+        format = "format_lfo_rate"
+    )]
+    pub lfo_4_rate: FloatParam,
+    #[param(name = "LFO 4 Mode", default = 0)]
+    pub lfo_4_mode: EnumParam<LfoModeType>,
+    #[param(name = "LFO 4 Route 1 Destination", default = 0)]
+    pub lfo_4_mod_1_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 4 Route 1 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_4_mod_1_amount: FloatParam,
+    #[param(name = "LFO 4 Route 2 Destination", default = 0)]
+    pub lfo_4_mod_2_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 4 Route 2 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_4_mod_2_amount: FloatParam,
+    #[param(name = "LFO 4 Route 3 Destination", default = 0)]
+    pub lfo_4_mod_3_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 4 Route 3 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_4_mod_3_amount: FloatParam,
+    #[param(name = "LFO 4 Route 4 Destination", default = 0)]
+    pub lfo_4_mod_4_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "LFO 4 Route 4 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub lfo_4_mod_4_amount: FloatParam,
+    #[meter]
+    pub lfo_2_position_0: MeterSlot,
+    #[meter]
+    pub lfo_2_position_1: MeterSlot,
+    #[meter]
+    pub lfo_2_position_2: MeterSlot,
+    #[meter]
+    pub lfo_2_position_3: MeterSlot,
+    #[meter]
+    pub lfo_2_position_4: MeterSlot,
+    #[meter]
+    pub lfo_2_position_5: MeterSlot,
+    #[meter]
+    pub lfo_2_position_6: MeterSlot,
+    #[meter]
+    pub lfo_2_position_7: MeterSlot,
+    #[meter]
+    pub lfo_2_newest: MeterSlot,
+    #[meter]
+    pub lfo_3_position_0: MeterSlot,
+    #[meter]
+    pub lfo_3_position_1: MeterSlot,
+    #[meter]
+    pub lfo_3_position_2: MeterSlot,
+    #[meter]
+    pub lfo_3_position_3: MeterSlot,
+    #[meter]
+    pub lfo_3_position_4: MeterSlot,
+    #[meter]
+    pub lfo_3_position_5: MeterSlot,
+    #[meter]
+    pub lfo_3_position_6: MeterSlot,
+    #[meter]
+    pub lfo_3_position_7: MeterSlot,
+    #[meter]
+    pub lfo_3_newest: MeterSlot,
+    #[meter]
+    pub lfo_4_position_0: MeterSlot,
+    #[meter]
+    pub lfo_4_position_1: MeterSlot,
+    #[meter]
+    pub lfo_4_position_2: MeterSlot,
+    #[meter]
+    pub lfo_4_position_3: MeterSlot,
+    #[meter]
+    pub lfo_4_position_4: MeterSlot,
+    #[meter]
+    pub lfo_4_position_5: MeterSlot,
+    #[meter]
+    pub lfo_4_position_6: MeterSlot,
+    #[meter]
+    pub lfo_4_position_7: MeterSlot,
+    #[meter]
+    pub lfo_4_newest: MeterSlot,
 }
+
+#[derive(Clone, Copy)]
+pub struct LfoParamIds {
+    pub shape: SynthParamsParamId,
+    pub rate: SynthParamsParamId,
+    pub mode: SynthParamsParamId,
+    pub destinations: [SynthParamsParamId; MOD_SLOTS],
+    pub amounts: [SynthParamsParamId; MOD_SLOTS],
+    pub positions: [SynthParamsParamId; MAX_VOICES],
+    pub newest: SynthParamsParamId,
+}
+
+impl LfoParamIds {
+    pub fn all(&self) -> [SynthParamsParamId; 3 + 2 * MOD_SLOTS] {
+        std::array::from_fn(|index| match index {
+            0 => self.shape,
+            1 => self.rate,
+            2 => self.mode,
+            index if index < 3 + MOD_SLOTS => self.destinations[index - 3],
+            index => self.amounts[index - 3 - MOD_SLOTS],
+        })
+    }
+}
+
+pub const LFO_PARAMS: [LfoParamIds; MAX_LFOS] = [
+    LfoParamIds {
+        shape: SynthParamsParamId::LfoShape,
+        rate: SynthParamsParamId::LfoRate,
+        mode: SynthParamsParamId::LfoMode,
+        destinations: MOD_DESTINATION_PARAMS,
+        amounts: MOD_AMOUNT_PARAMS,
+        positions: LFO_POSITION_METERS,
+        newest: SynthParamsParamId::LfoNewest,
+    },
+    LfoParamIds {
+        shape: SynthParamsParamId::Lfo2Shape,
+        rate: SynthParamsParamId::Lfo2Rate,
+        mode: SynthParamsParamId::Lfo2Mode,
+        destinations: [
+            SynthParamsParamId::Lfo2Mod1Destination,
+            SynthParamsParamId::Lfo2Mod2Destination,
+            SynthParamsParamId::Lfo2Mod3Destination,
+            SynthParamsParamId::Lfo2Mod4Destination,
+        ],
+        amounts: [
+            SynthParamsParamId::Lfo2Mod1Amount,
+            SynthParamsParamId::Lfo2Mod2Amount,
+            SynthParamsParamId::Lfo2Mod3Amount,
+            SynthParamsParamId::Lfo2Mod4Amount,
+        ],
+        positions: [
+            SynthParamsParamId::Lfo2Position0,
+            SynthParamsParamId::Lfo2Position1,
+            SynthParamsParamId::Lfo2Position2,
+            SynthParamsParamId::Lfo2Position3,
+            SynthParamsParamId::Lfo2Position4,
+            SynthParamsParamId::Lfo2Position5,
+            SynthParamsParamId::Lfo2Position6,
+            SynthParamsParamId::Lfo2Position7,
+        ],
+        newest: SynthParamsParamId::Lfo2Newest,
+    },
+    LfoParamIds {
+        shape: SynthParamsParamId::Lfo3Shape,
+        rate: SynthParamsParamId::Lfo3Rate,
+        mode: SynthParamsParamId::Lfo3Mode,
+        destinations: [
+            SynthParamsParamId::Lfo3Mod1Destination,
+            SynthParamsParamId::Lfo3Mod2Destination,
+            SynthParamsParamId::Lfo3Mod3Destination,
+            SynthParamsParamId::Lfo3Mod4Destination,
+        ],
+        amounts: [
+            SynthParamsParamId::Lfo3Mod1Amount,
+            SynthParamsParamId::Lfo3Mod2Amount,
+            SynthParamsParamId::Lfo3Mod3Amount,
+            SynthParamsParamId::Lfo3Mod4Amount,
+        ],
+        positions: [
+            SynthParamsParamId::Lfo3Position0,
+            SynthParamsParamId::Lfo3Position1,
+            SynthParamsParamId::Lfo3Position2,
+            SynthParamsParamId::Lfo3Position3,
+            SynthParamsParamId::Lfo3Position4,
+            SynthParamsParamId::Lfo3Position5,
+            SynthParamsParamId::Lfo3Position6,
+            SynthParamsParamId::Lfo3Position7,
+        ],
+        newest: SynthParamsParamId::Lfo3Newest,
+    },
+    LfoParamIds {
+        shape: SynthParamsParamId::Lfo4Shape,
+        rate: SynthParamsParamId::Lfo4Rate,
+        mode: SynthParamsParamId::Lfo4Mode,
+        destinations: [
+            SynthParamsParamId::Lfo4Mod1Destination,
+            SynthParamsParamId::Lfo4Mod2Destination,
+            SynthParamsParamId::Lfo4Mod3Destination,
+            SynthParamsParamId::Lfo4Mod4Destination,
+        ],
+        amounts: [
+            SynthParamsParamId::Lfo4Mod1Amount,
+            SynthParamsParamId::Lfo4Mod2Amount,
+            SynthParamsParamId::Lfo4Mod3Amount,
+            SynthParamsParamId::Lfo4Mod4Amount,
+        ],
+        positions: [
+            SynthParamsParamId::Lfo4Position0,
+            SynthParamsParamId::Lfo4Position1,
+            SynthParamsParamId::Lfo4Position2,
+            SynthParamsParamId::Lfo4Position3,
+            SynthParamsParamId::Lfo4Position4,
+            SynthParamsParamId::Lfo4Position5,
+            SynthParamsParamId::Lfo4Position6,
+            SynthParamsParamId::Lfo4Position7,
+        ],
+        newest: SynthParamsParamId::Lfo4Newest,
+    },
+];
 
 /// Destination and amount parameters for each LFO routing slot.
 pub const MOD_DESTINATION_PARAMS: [SynthParamsParamId; MOD_SLOTS] = [
@@ -497,14 +839,11 @@ pub fn decode_lfo_newest(meter: f32) -> Option<usize> {
     (meter >= 1.0).then(|| meter.round() as usize - 1)
 }
 
-fn publish_lfo_positions(context: &ProcessContext, positions: &LfoPositions) {
-    for (meter, phase) in LFO_POSITION_METERS.iter().zip(positions.phases) {
+fn publish_lfo_positions(context: &ProcessContext, ids: &LfoParamIds, positions: &LfoPositions) {
+    for (meter, phase) in ids.positions.iter().zip(positions.phases) {
         context.set_meter(*meter, encode_lfo_position(phase));
     }
-    context.set_meter(
-        SynthParamsParamId::LfoNewest,
-        encode_lfo_newest(positions.newest),
-    );
+    context.set_meter(ids.newest, encode_lfo_newest(positions.newest));
 }
 
 impl SynthParams {
@@ -553,17 +892,53 @@ impl SynthParams {
         ]
     }
 
-    fn mod_routes(&self) -> [ModRoute; MOD_SLOTS] {
+    fn lfo_settings(&self) -> [LfoSettings; MAX_LFOS] {
+        [
+            (&self.lfo_shape, &self.lfo_rate, &self.lfo_mode),
+            (&self.lfo_2_shape, &self.lfo_2_rate, &self.lfo_2_mode),
+            (&self.lfo_3_shape, &self.lfo_3_rate, &self.lfo_3_mode),
+            (&self.lfo_4_shape, &self.lfo_4_rate, &self.lfo_4_mode),
+        ]
+        .map(|(shape, rate, mode)| LfoSettings {
+            waveform: shape.value().into(),
+            frequency_hz: rate.read(),
+            mode: mode.value().into(),
+        })
+    }
+
+    fn mod_routes(&self) -> [[ModRoute; MOD_SLOTS]; MAX_LFOS] {
         let slots = [
-            (self.mod_1_destination.value(), &self.mod_1_amount),
-            (self.mod_2_destination.value(), &self.mod_2_amount),
-            (self.mod_3_destination.value(), &self.mod_3_amount),
-            (self.mod_4_destination.value(), &self.mod_4_amount),
+            [
+                (&self.mod_1_destination, &self.mod_1_amount),
+                (&self.mod_2_destination, &self.mod_2_amount),
+                (&self.mod_3_destination, &self.mod_3_amount),
+                (&self.mod_4_destination, &self.mod_4_amount),
+            ],
+            [
+                (&self.lfo_2_mod_1_destination, &self.lfo_2_mod_1_amount),
+                (&self.lfo_2_mod_2_destination, &self.lfo_2_mod_2_amount),
+                (&self.lfo_2_mod_3_destination, &self.lfo_2_mod_3_amount),
+                (&self.lfo_2_mod_4_destination, &self.lfo_2_mod_4_amount),
+            ],
+            [
+                (&self.lfo_3_mod_1_destination, &self.lfo_3_mod_1_amount),
+                (&self.lfo_3_mod_2_destination, &self.lfo_3_mod_2_amount),
+                (&self.lfo_3_mod_3_destination, &self.lfo_3_mod_3_amount),
+                (&self.lfo_3_mod_4_destination, &self.lfo_3_mod_4_amount),
+            ],
+            [
+                (&self.lfo_4_mod_1_destination, &self.lfo_4_mod_1_amount),
+                (&self.lfo_4_mod_2_destination, &self.lfo_4_mod_2_amount),
+                (&self.lfo_4_mod_3_destination, &self.lfo_4_mod_3_amount),
+                (&self.lfo_4_mod_4_destination, &self.lfo_4_mod_4_amount),
+            ],
         ];
         // Amounts are smoothed, so read every one each sample.
-        slots.map(|(destination, amount)| ModRoute {
-            destination: destination.into(),
-            amount: amount.read() / 100.0,
+        slots.map(|slots| {
+            slots.map(|(destination, amount)| ModRoute {
+                destination: destination.value().into(),
+                amount: amount.read() / 100.0,
+            })
         })
     }
 
@@ -623,11 +998,10 @@ impl PluginLogic for Synth {
             state.engine.set_start_phase(index, phase.read() / 360.0);
         }
 
-        state.engine.set_lfo_settings(LfoSettings {
-            waveform: params.lfo_shape.value().into(),
-            frequency_hz: params.lfo_rate.read(),
-            mode: params.lfo_mode.value().into(),
-        });
+        state.engine.set_lfo_count(params.lfo_count.value_usize());
+        for (index, settings) in params.lfo_settings().into_iter().enumerate() {
+            state.engine.set_lfo(index, settings);
+        }
 
         let filter_mode: FilterMode = params.filter_type.value().into();
 
@@ -661,14 +1035,18 @@ impl PluginLogic for Synth {
                     .engine
                     .set_oscillator_level(index, level.read() / 100.0);
             }
-            state.engine.set_modulation(&params.mod_routes());
+            for (index, routes) in params.mod_routes().iter().enumerate() {
+                state.engine.set_lfo_modulation(index, routes);
+            }
             let sample = state.engine.next_sample(db_to_linear(params.volume.read()));
             for channel in 0..output_channels {
                 buffer.output(channel)[sample_index] = sample;
             }
         }
 
-        publish_lfo_positions(context, &state.engine.lfo_positions());
+        for (index, ids) in LFO_PARAMS.iter().enumerate() {
+            publish_lfo_positions(context, ids, &state.engine.lfo_positions_at(index));
+        }
 
         if state.engine.has_active_note() {
             ProcessStatus::Normal

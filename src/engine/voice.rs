@@ -5,7 +5,7 @@ use super::node::envelope::{AdsrEnvelope, AdsrSettings};
 use super::node::filter::{BiquadState, Filter, FilterSettings};
 use super::node::lfo::{Lfo, LfoSettings};
 use super::node::oscillator::{Oscillator, Waveform};
-use super::{MAX_OSCILLATORS, OscillatorSettings};
+use super::{MAX_LFOS, MAX_OSCILLATORS, OscillatorSettings};
 
 /// The control values every voice starts from each sample, before its LFO
 /// modulation is applied.
@@ -16,10 +16,11 @@ pub(super) struct VoiceControls {
     pub oscillators: [OscillatorSettings; MAX_OSCILLATORS],
     /// How many oscillators, from the first, sound.
     pub oscillator_count: usize,
-    pub depths: ModDepths,
+    pub depths: [ModDepths; MAX_LFOS],
     /// The shared LFO's value in sync mode; `None` in trigger mode, where
     /// each voice uses its own LFO.
-    pub sync_lfo: Option<f32>,
+    pub sync_lfos: [Option<f32>; MAX_LFOS],
+    pub lfo_count: usize,
 }
 
 /// Per-voice node state for the oscillator-to-filter-to-envelope graph.
@@ -34,7 +35,8 @@ pub(super) struct Voice {
     envelope: AdsrEnvelope,
     /// This note's LFO: restarted on every note press and stopped when the
     /// voice falls silent.
-    lfo: Lfo,
+    lfos: [Lfo; MAX_LFOS],
+    lfo_count: usize,
     note: Option<u8>,
     /// Allocation order stamp; lower values are older and stolen first.
     started_at: u64,
@@ -47,7 +49,9 @@ impl Voice {
         }
         self.filter.prepare(sample_rate);
         self.filter_state.reset();
-        self.lfo.reset(sample_rate);
+        for lfo in &mut self.lfos {
+            lfo.reset(sample_rate);
+        }
         self.note = None;
         self.started_at = 0;
         self.envelope.prepare(sample_rate)
@@ -57,8 +61,20 @@ impl Voice {
         self.envelope.set_settings(settings);
     }
 
-    pub(super) fn set_lfo_settings(&mut self, settings: LfoSettings) {
-        self.lfo.set_settings(settings);
+    pub(super) fn set_lfo_settings(&mut self, index: usize, settings: LfoSettings) {
+        self.lfos[index].set_settings(settings);
+    }
+
+    pub(super) fn set_lfo_count(&mut self, count: usize) {
+        let active = self.is_active();
+        for (index, lfo) in self.lfos.iter_mut().enumerate() {
+            if index >= count {
+                lfo.stop();
+            } else if index >= self.lfo_count && active {
+                lfo.start();
+            }
+        }
+        self.lfo_count = count;
     }
 
     pub(super) fn set_waveform(&mut self, oscillator: usize, waveform: Waveform) {
@@ -84,7 +100,9 @@ impl Voice {
             oscillator.handle_event(MidiEvent::NoteOn { note, velocity });
         }
         self.envelope.note_on();
-        self.lfo.start();
+        for lfo in &mut self.lfos[..self.lfo_count] {
+            lfo.start();
+        }
         self.note = Some(note);
         self.started_at = started_at;
     }
@@ -99,7 +117,9 @@ impl Voice {
         // An envelope released at level 0 goes idle at once, and an inactive
         // voice never reaches the cleanup in `next_sample`.
         if !self.is_active() {
-            self.lfo.stop();
+            for lfo in &mut self.lfos {
+                lfo.stop();
+            }
         }
     }
 
@@ -111,8 +131,11 @@ impl Voice {
 
         // The voice LFO keeps running in sync mode so its display stays
         // current if the mode switches back.
-        let own_lfo = self.lfo.next_sample();
-        self.apply_controls(controls, controls.sync_lfo.unwrap_or(own_lfo));
+        let values = std::array::from_fn(|index| {
+            let own_lfo = self.lfos[index].next_sample();
+            controls.sync_lfos[index].unwrap_or(own_lfo)
+        });
+        self.apply_controls(controls, values);
 
         let oscillator_count = controls.oscillator_count.clamp(1, MAX_OSCILLATORS);
         let mut audio = 0.0;
@@ -140,16 +163,23 @@ impl Voice {
                 oscillator.stop();
             }
             self.filter_state.reset();
-            self.lfo.stop();
+            for lfo in &mut self.lfos {
+                lfo.stop();
+            }
             self.note = None;
         }
 
         output
     }
 
-    fn apply_controls(&mut self, controls: &VoiceControls, lfo: f32) {
+    fn apply_controls(&mut self, controls: &VoiceControls, values: [f32; MAX_LFOS]) {
         let modulate = |destination: ModDestination, value: f32| {
-            destination.modulate(value, controls.depths.depth(destination) * lfo)
+            let offset = controls.depths[..controls.lfo_count]
+                .iter()
+                .zip(values)
+                .map(|(depths, lfo)| depths.depth(destination) * lfo)
+                .sum();
+            destination.modulate(value, offset)
         };
         let count = controls.oscillator_count.clamp(1, MAX_OSCILLATORS);
         for (index, (oscillator, settings)) in self
@@ -185,8 +215,8 @@ impl Voice {
     }
 
     /// This note's LFO position, or `None` if the voice is silent.
-    pub(super) fn lfo_phase(&self) -> Option<f32> {
-        (self.is_active() && self.lfo.is_running()).then(|| self.lfo.phase())
+    pub(super) fn lfo_phase(&self, index: usize) -> Option<f32> {
+        (self.is_active() && self.lfos[index].is_running()).then(|| self.lfos[index].phase())
     }
 
     pub(super) fn started_at(&self) -> u64 {

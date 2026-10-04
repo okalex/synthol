@@ -20,6 +20,8 @@ use voice::{Voice, VoiceControls};
 pub const MAX_VOICES: usize = 8;
 /// Hard upper bound on oscillators per voice.
 pub const MAX_OSCILLATORS: usize = 4;
+/// Hard upper bound on independently routed LFOs.
+pub const MAX_LFOS: usize = 4;
 
 /// One oscillator's controls. Every voice runs each oscillator on its note
 /// and mixes the active ones before the filter.
@@ -62,11 +64,12 @@ pub struct SynthEngine {
     oscillators: [OscillatorSettings; MAX_OSCILLATORS],
     /// How many oscillators, from the first, sound.
     oscillator_count: usize,
-    depths: ModDepths,
+    depths: [ModDepths; MAX_LFOS],
     /// The free-running LFO shared by every voice in sync mode. In trigger
     /// mode each voice runs its own instead.
-    sync_lfo: Lfo,
-    lfo_mode: LfoMode,
+    sync_lfos: [Lfo; MAX_LFOS],
+    lfo_modes: [LfoMode; MAX_LFOS],
+    lfo_count: usize,
     voices: [Voice; MAX_VOICES],
     voice_limit: usize,
     next_voice_stamp: u64,
@@ -83,9 +86,10 @@ impl Default for SynthEngine {
             filter: FilterSettings::default(),
             oscillators: [OscillatorSettings::default(); MAX_OSCILLATORS],
             oscillator_count: 1,
-            depths: ModDepths::default(),
-            sync_lfo: Lfo::default(),
-            lfo_mode: LfoMode::default(),
+            depths: [ModDepths::default(); MAX_LFOS],
+            sync_lfos: Default::default(),
+            lfo_modes: [LfoMode::default(); MAX_LFOS],
+            lfo_count: 0,
             voices: Default::default(),
             voice_limit: MAX_VOICES,
             next_voice_stamp: 0,
@@ -98,9 +102,11 @@ impl SynthEngine {
         if !sample_rate.is_finite() || sample_rate <= 0.0 {
             return false;
         }
-        self.sync_lfo.reset(sample_rate);
-        if self.lfo_mode == LfoMode::Sync {
-            self.sync_lfo.start();
+        for (index, lfo) in self.sync_lfos.iter_mut().enumerate() {
+            lfo.reset(sample_rate);
+            if index < self.lfo_count && self.lfo_modes[index] == LfoMode::Sync {
+                lfo.start();
+            }
         }
         let mut prepared = true;
         for voice in &mut self.voices {
@@ -157,40 +163,77 @@ impl SynthEngine {
         }
     }
 
-    /// Route the LFO to destinations; routes sharing a destination add up.
-    pub fn set_modulation(&mut self, routes: &[ModRoute]) {
-        self.depths = ModDepths::from_routes(routes);
+    /// Route LFO `index` to destinations; all active routes sharing a
+    /// destination add up before clamping.
+    pub fn set_lfo_modulation(&mut self, index: usize, routes: &[ModRoute]) {
+        self.depths[index] = ModDepths::from_routes(routes);
     }
 
-    pub fn set_lfo_settings(&mut self, settings: LfoSettings) {
-        self.lfo_mode = settings.mode;
-        self.sync_lfo.set_settings(settings);
-        match settings.mode {
-            LfoMode::Sync if !self.sync_lfo.is_running() => self.sync_lfo.start(),
-            LfoMode::Sync => {}
-            LfoMode::Trigger => self.sync_lfo.stop(),
+    /// Activate the first `count` LFOs, clamped to `0..=MAX_LFOS`.
+    pub fn set_lfo_count(&mut self, count: usize) {
+        let count = count.min(MAX_LFOS);
+        for index in 0..MAX_LFOS {
+            if index >= count {
+                self.sync_lfos[index].stop();
+            } else if index >= self.lfo_count && self.lfo_modes[index] == LfoMode::Sync {
+                self.sync_lfos[index].start();
+            }
         }
         for voice in &mut self.voices {
-            voice.set_lfo_settings(settings);
+            voice.set_lfo_count(count);
         }
+        self.lfo_count = count;
+    }
+
+    pub fn set_lfo(&mut self, index: usize, settings: LfoSettings) {
+        self.lfo_modes[index] = settings.mode;
+        let lfo = &mut self.sync_lfos[index];
+        lfo.set_settings(settings);
+        match settings.mode {
+            LfoMode::Sync if index < self.lfo_count && !lfo.is_running() => lfo.start(),
+            LfoMode::Sync => {}
+            LfoMode::Trigger => lfo.stop(),
+        }
+        for voice in &mut self.voices {
+            voice.set_lfo_settings(index, settings);
+        }
+    }
+
+    #[cfg(test)]
+    fn set_lfo_settings(&mut self, settings: LfoSettings) {
+        self.set_lfo_count(1);
+        self.set_lfo(0, settings);
+    }
+
+    #[cfg(test)]
+    fn set_modulation(&mut self, routes: &[ModRoute]) {
+        self.set_lfo_modulation(0, routes);
+    }
+
+    #[cfg(test)]
+    fn lfo_positions(&self) -> LfoPositions {
+        self.lfo_positions_at(0)
     }
 
     /// Positions of the LFOs that apply in the current mode. Voice LFOs keep
     /// running in sync mode (they're cheap), so switching back to trigger
     /// mode shows where each sounding note's LFO is.
-    pub fn lfo_positions(&self) -> LfoPositions {
+    pub fn lfo_positions_at(&self, lfo_index: usize) -> LfoPositions {
         let mut positions = LfoPositions::default();
-        match self.lfo_mode {
+        if lfo_index >= self.lfo_count {
+            return positions;
+        }
+        match self.lfo_modes[lfo_index] {
             LfoMode::Sync => {
-                if self.sync_lfo.is_running() {
-                    positions.phases[0] = Some(self.sync_lfo.phase());
+                if self.sync_lfos[lfo_index].is_running() {
+                    positions.phases[0] = Some(self.sync_lfos[lfo_index].phase());
                     positions.newest = Some(0);
                 }
             }
             LfoMode::Trigger => {
                 let mut newest_start = None;
                 for (index, voice) in self.voices.iter().enumerate() {
-                    let Some(phase) = voice.lfo_phase() else {
+                    let Some(phase) = voice.lfo_phase(lfo_index) else {
                         continue;
                     };
                     positions.phases[index] = Some(phase);
@@ -289,13 +332,17 @@ impl SynthEngine {
     pub fn next_sample(&mut self, gain: f32) -> f32 {
         // Advance the shared LFO every sample, even with no notes, so it
         // free-runs.
-        let sync_lfo = self.sync_lfo.next_sample();
+        let sync_lfos = std::array::from_fn(|index| {
+            let value = self.sync_lfos[index].next_sample();
+            (index < self.lfo_count && self.lfo_modes[index] == LfoMode::Sync).then_some(value)
+        });
         let controls = VoiceControls {
             filter: self.filter,
             oscillators: self.oscillators,
             oscillator_count: self.oscillator_count,
             depths: self.depths,
-            sync_lfo: (self.lfo_mode == LfoMode::Sync).then_some(sync_lfo),
+            sync_lfos,
+            lfo_count: self.lfo_count,
         };
         let graph = &self.graph;
         let output: f32 = self
@@ -809,6 +856,125 @@ mod tests {
         ModRoute {
             destination: Some(destination),
             amount,
+        }
+    }
+
+    #[test]
+    fn lfos_start_empty_and_removed_lfos_stop() {
+        let mut engine = SynthEngine::default();
+        engine.reset(1_000.0);
+        note_on(&mut engine, 69);
+        render(&mut engine, 100);
+        for index in 0..super::MAX_LFOS {
+            assert_eq!(
+                engine.lfo_positions_at(index),
+                super::LfoPositions::default()
+            );
+        }
+        engine.set_lfo_count(super::MAX_LFOS + 1);
+        for index in 0..super::MAX_LFOS {
+            engine.set_lfo(index, lfo_settings(super::LfoMode::Trigger));
+            assert_eq!(engine.lfo_positions_at(index).phases[0], Some(0.0));
+        }
+        render(&mut engine, 100);
+        engine.set_lfo_count(0);
+        for index in 0..super::MAX_LFOS {
+            assert_eq!(
+                engine.lfo_positions_at(index),
+                super::LfoPositions::default()
+            );
+            assert!(!engine.sync_lfos[index].is_running());
+            assert_eq!(engine.voices[0].lfo_phase(index), None);
+        }
+        engine.set_lfo_count(1);
+        assert_eq!(engine.lfo_positions_at(0).phases[0], Some(0.0));
+    }
+
+    #[test]
+    fn independent_lfos_can_mix_trigger_and_sync_modes() {
+        let mut engine = SynthEngine::default();
+        engine.reset(1_000.0);
+        engine.set_lfo_count(2);
+        engine.set_lfo(
+            0,
+            super::LfoSettings {
+                frequency_hz: 1.0,
+                mode: super::LfoMode::Sync,
+                ..Default::default()
+            },
+        );
+        engine.set_lfo(
+            1,
+            super::LfoSettings {
+                frequency_hz: 2.0,
+                mode: super::LfoMode::Trigger,
+                ..Default::default()
+            },
+        );
+        render(&mut engine, 100);
+        assert!((engine.lfo_positions_at(0).phases[0].unwrap() - 0.1).abs() < 1e-6);
+        assert_eq!(engine.lfo_positions_at(1), super::LfoPositions::default());
+        note_on(&mut engine, 60);
+        render(&mut engine, 100);
+        note_on(&mut engine, 67);
+        let sync = engine.lfo_positions_at(0);
+        let trigger = engine.lfo_positions_at(1);
+        assert!((sync.phases[0].unwrap() - 0.2).abs() < 1e-6);
+        assert!((trigger.phases[0].unwrap() - 0.2).abs() < 1e-6);
+        assert_eq!(trigger.phases[1], Some(0.0));
+        assert_eq!(trigger.newest, Some(1));
+        engine.reset(2_000.0);
+        assert_eq!(engine.lfo_positions_at(0).phases[0], Some(0.0));
+        assert_eq!(engine.lfo_positions_at(1), super::LfoPositions::default());
+    }
+
+    #[test]
+    fn all_lfos_sum_before_clamping_for_every_destination() {
+        for destination in ModDestination::ALL {
+            let make_engine = |count, amounts: [f32; super::MAX_LFOS]| {
+                let mut engine = modulated_engine(super::LfoMode::Trigger, &[]);
+                engine.set_oscillator_count(super::MAX_OSCILLATORS);
+                engine.set_oscillator_level(0, 0.9);
+                engine.set_filter_settings(super::FilterSettings {
+                    cutoff_hz: 1_000.0,
+                    q: 2.0,
+                    ..Default::default()
+                });
+                engine.set_lfo_count(count);
+                for (index, amount) in amounts.into_iter().enumerate() {
+                    engine.set_lfo(
+                        index,
+                        super::LfoSettings {
+                            waveform: super::Waveform::Square,
+                            frequency_hz: 1.0,
+                            mode: if index % 2 == 0 {
+                                super::LfoMode::Sync
+                            } else {
+                                super::LfoMode::Trigger
+                            },
+                        },
+                    );
+                    engine.set_lfo_modulation(index, &[route(destination, amount)]);
+                }
+                note_on(&mut engine, 69);
+                render(&mut engine, 1_000)
+            };
+            let reference = make_engine(0, [0.0; super::MAX_LFOS]);
+            assert_eq!(
+                make_engine(4, [0.5, -0.5, 0.25, -0.25]),
+                reference,
+                "{destination:?}"
+            );
+            assert_eq!(
+                make_engine(0, [1.0; super::MAX_LFOS]),
+                reference,
+                "{destination:?}"
+            );
+            assert_eq!(
+                make_engine(4, [0.125; super::MAX_LFOS]),
+                make_engine(1, [0.5, 0.0, 0.0, 0.0]),
+                "{destination:?}"
+            );
         }
     }
 

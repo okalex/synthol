@@ -14,450 +14,515 @@ use crate::engine::node::filter::{MAX_Q, MIN_Q};
 use crate::engine::node::lfo::render_lfo_cycle;
 use crate::engine::node::oscillator::{naive_waveform_sample, render_cycle};
 use crate::engine::{
-    FilterMode, FilterSettings, MAX_OSCILLATORS, MAX_VOICES, MOD_SLOTS, ModDestination, ModRoute,
-    Waveform,
+    FilterMode, FilterSettings, MAX_LFOS, MAX_OSCILLATORS, MAX_VOICES, MOD_SLOTS, ModDestination,
+    ModRoute, Waveform,
 };
 use crate::plugin::{
-    FilterType, LFO_POSITION_METERS, LfoModeType, LfoShapeType, MOD_AMOUNT_PARAMS,
-    MOD_DESTINATION_PARAMS, ModDestinationType, OSCILLATOR_PARAMS, OscillatorType, SynthParams,
-    SynthParamsParamId, decode_lfo_newest, decode_lfo_position, mod_destination_from_index,
-    mod_destination_index,
+    FilterType, LFO_PARAMS, LfoModeType, LfoShapeType, ModDestinationType, OSCILLATOR_PARAMS,
+    OscillatorType, SynthParams, SynthParamsParamId, decode_lfo_newest, decode_lfo_position,
+    mod_destination_from_index, mod_destination_index,
 };
 
 slint::include_modules!();
 
 pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
     SlintEditor::new(
-        params.clone(),
+        params,
         (720, 1010),
         |state: PluginContext<SynthParams>| -> SyncFn<SynthParams> {
             let ui = SynthUi::new().expect("failed to create Slint editor");
-            let pending_edits = Rc::new(RefCell::new(Vec::<(SynthParamsParamId, f64)>::new()));
-
-            let state_for_ui = state.clone();
-            ui.on_gain_changed(move |value| {
-                state_for_ui
-                    .params()
-                    .set_normalized(SynthParamsParamId::Volume.into(), f64::from(value));
-            });
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_gain_released(move || {
-                let id = SynthParamsParamId::Volume;
-                enqueue_edit(
-                    &pending_edits_for_ui,
-                    (id, f64::from(state_for_ui.get_param(id))),
-                );
-            });
-
-            let state_for_ui = state.clone();
-            ui.on_envelope_changed(move |id, value| {
-                if let Some(parameter) = envelope_parameter(id) {
-                    state_for_ui
-                        .params()
-                        .set_normalized(parameter.into(), f64::from(value));
-                }
-            });
-            let state_for_ui = state.clone();
-            ui.on_envelope_sustain_level_changed(move |level| {
-                let sustain_db = 20.0 * level.clamp(0.001, 1.0).log10();
-                let normalized = ((sustain_db + 60.0) / 60.0).clamp(0.0, 1.0);
-                state_for_ui
-                    .params()
-                    .set_normalized(SynthParamsParamId::Sustain.into(), f64::from(normalized));
-            });
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_envelope_released(move |id| {
-                if let Some(parameter) = envelope_parameter(id) {
-                    enqueue_edit(
-                        &pending_edits_for_ui,
-                        (parameter, f64::from(state_for_ui.get_param(parameter))),
-                    );
-                }
-            });
-
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_voices_selected(move |count| {
-                let id = SynthParamsParamId::Voices;
-                let normalized = voices_to_normalized(count);
-                state_for_ui.params().set_normalized(id.into(), normalized);
-                enqueue_edit(&pending_edits_for_ui, (id, normalized));
-            });
-
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_oscillator_selected(move |oscillator, index| {
-                let Some(params) = oscillator_params(oscillator) else {
-                    return;
-                };
-                let id = params.waveform;
-                let normalized = oscillator_to_normalized(index);
-                state_for_ui.params().set_normalized(id.into(), normalized);
-                enqueue_edit(&pending_edits_for_ui, (id, normalized));
-            });
-
-            let state_for_ui = state.clone();
-            ui.on_osc_changed(move |oscillator, id, value| {
-                if let Some(parameter) = oscillator_parameter(oscillator, id) {
-                    state_for_ui
-                        .params()
-                        .set_normalized(parameter.into(), f64::from(value));
-                }
-            });
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_osc_released(move |oscillator, id| {
-                if let Some(parameter) = oscillator_parameter(oscillator, id) {
-                    enqueue_edit(
-                        &pending_edits_for_ui,
-                        (parameter, f64::from(state_for_ui.get_param(parameter))),
-                    );
-                }
-            });
-
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_oscillator_add(move || {
-                let count = state_for_ui.params().osc_count.value_usize();
-                if count < MAX_OSCILLATORS {
-                    set_param(
-                        &state_for_ui,
-                        &pending_edits_for_ui,
-                        SynthParamsParamId::OscCount,
-                        oscillator_count_to_normalized(count + 1),
-                    );
-                }
-            });
-
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_oscillator_remove(move |oscillator| {
-                let Ok(removed) = usize::try_from(oscillator) else {
-                    return;
-                };
-                remove_oscillator(&state_for_ui, &pending_edits_for_ui, removed);
-            });
-
-            ui.on_oscillator_cycle_path(|index, phase, width, height| {
-                let waveform = oscillator_from_index(index);
-                slint::SharedString::from(waveform_cycle_path(waveform, phase, width, height))
-            });
-
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_filter_type_selected(move |index| {
-                let id = SynthParamsParamId::FilterType;
-                let normalized = filter_type_to_normalized(index);
-                state_for_ui.params().set_normalized(id.into(), normalized);
-                enqueue_edit(&pending_edits_for_ui, (id, normalized));
-            });
-
-            let state_for_ui = state.clone();
-            ui.on_filter_changed(move |id, value| {
-                if let Some(parameter) = filter_parameter(id) {
-                    state_for_ui
-                        .params()
-                        .set_normalized(parameter.into(), f64::from(value));
-                }
-            });
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_filter_released(move |id| {
-                if let Some(parameter) = filter_parameter(id) {
-                    enqueue_edit(
-                        &pending_edits_for_ui,
-                        (parameter, f64::from(state_for_ui.get_param(parameter))),
-                    );
-                }
-            });
-
-            // Takes the knobs' normalized values so the plot tracks a drag
-            // without waiting for the next sync.
-            let state_for_ui = state.clone();
-            ui.on_filter_response_path(move |index, cutoff, q, width, height| {
-                let params = state_for_ui.params();
-                let settings = FilterSettings {
-                    mode: filter_mode_from_index(index),
-                    cutoff_hz: params
-                        .filter_cutoff
-                        .info
-                        .range
-                        .denormalize(f64::from(cutoff)) as f32,
-                    q: params.filter_q.info.range.denormalize(f64::from(q)) as f32,
-                };
-                slint::SharedString::from(filter_response_path(settings, width, height))
-            });
-
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_lfo_shape_selected(move |index| {
-                let id = SynthParamsParamId::LfoShape;
-                let normalized = lfo_shape_to_normalized(index);
-                state_for_ui.params().set_normalized(id.into(), normalized);
-                enqueue_edit(&pending_edits_for_ui, (id, normalized));
-            });
-
-            let state_for_ui = state.clone();
-            ui.on_lfo_rate_changed(move |value| {
-                state_for_ui
-                    .params()
-                    .set_normalized(SynthParamsParamId::LfoRate.into(), f64::from(value));
-            });
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_lfo_rate_released(move || {
-                let id = SynthParamsParamId::LfoRate;
-                enqueue_edit(
-                    &pending_edits_for_ui,
-                    (id, f64::from(state_for_ui.get_param(id))),
-                );
-            });
-
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_lfo_mode_selected(move |index| {
-                let id = SynthParamsParamId::LfoMode;
-                let normalized = lfo_mode_to_normalized(index);
-                state_for_ui.params().set_normalized(id.into(), normalized);
-                enqueue_edit(&pending_edits_for_ui, (id, normalized));
-            });
-
-            ui.on_lfo_cycle_path(|index, width, height| {
-                let waveform = lfo_shape_from_index(index);
-                slint::SharedString::from(lfo_cycle_path(waveform, width, height))
-            });
-
-            let lfo_marker_model = Rc::new(slint::VecModel::from(vec![
-                PositionMarker::default();
-                MAX_VOICES
-            ]));
-            ui.set_lfo_markers(slint::ModelRc::from(lfo_marker_model.clone()));
-
-            // Writes a routing slot's parameters and records them for the host.
-            let set_slot = {
-                let pending_edits = pending_edits.clone();
-                let state = state.clone();
-                move |slot: usize,
-                      destination: Option<Option<ModDestination>>,
-                      amount: Option<f32>| {
-                    if let Some(destination) = destination {
-                        let id = MOD_DESTINATION_PARAMS[slot];
-                        let normalized = destination_to_normalized(destination);
-                        state.params().set_normalized(id.into(), normalized);
-                        enqueue_edit(&pending_edits, (id, normalized));
-                    }
-                    if let Some(amount) = amount {
-                        let id = MOD_AMOUNT_PARAMS[slot];
-                        let normalized = amount_to_normalized(amount);
-                        state.params().set_normalized(id.into(), normalized);
-                        enqueue_edit(&pending_edits, (id, normalized));
-                    }
-                }
-            };
-
-            let state_for_ui = state.clone();
-            let set_slot_for_ui = set_slot.clone();
-            ui.on_mod_assign(move |target| {
-                let Some(destination) = mod_target(target) else {
-                    return;
-                };
-                if let Some(slot) = slot_for_new_route(&read_routes(&state_for_ui), destination) {
-                    set_slot_for_ui(
-                        slot,
-                        Some(Some(destination)),
-                        Some(default_mod_amount(destination)),
-                    );
-                }
-            });
-
-            let state_for_ui = state.clone();
-            let set_slot_for_ui = set_slot.clone();
-            ui.on_mod_destination_selected(move |slot, index| {
-                let Some(slot) = mod_slot(slot) else {
-                    return;
-                };
-                let routes = read_routes(&state_for_ui);
-                let shown =
-                    shown_oscillators(state_for_ui.params().osc_count.value_usize(), &routes);
-                let destination = destination_from_option(shown, index);
-                let route = routes[slot];
-                // A freshly routed slot starts at a useful depth rather than zero.
-                let amount = match destination {
-                    Some(destination) if route.amount == 0.0 => {
-                        Some(default_mod_amount(destination))
-                    }
-                    _ => None,
-                };
-                set_slot_for_ui(slot, Some(destination), amount);
-            });
-
-            let state_for_ui = state.clone();
-            ui.on_mod_amount_changed(move |slot, value| {
-                if let Some(slot) = mod_slot(slot) {
-                    state_for_ui
-                        .params()
-                        .set_normalized(MOD_AMOUNT_PARAMS[slot].into(), f64::from(value));
-                }
-            });
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_mod_amount_released(move |slot| {
-                if let Some(slot) = mod_slot(slot) {
-                    let id = MOD_AMOUNT_PARAMS[slot];
-                    enqueue_edit(
-                        &pending_edits_for_ui,
-                        (id, f64::from(state_for_ui.get_param(id))),
-                    );
-                }
-            });
-
-            let set_slot_for_ui = set_slot.clone();
-            ui.on_mod_remove(move |slot| {
-                if let Some(slot) = mod_slot(slot) {
-                    set_slot_for_ui(slot, Some(None), Some(0.0));
-                }
-            });
-
-            let state_for_ui = state.clone();
-            ui.on_mod_depth_changed(move |target, depth| {
-                let Some(destination) = mod_target(target) else {
-                    return;
-                };
-                if let Some((slot, amount)) =
-                    depth_edit(&read_routes(&state_for_ui), destination, depth)
-                {
-                    state_for_ui.params().set_normalized(
-                        MOD_AMOUNT_PARAMS[slot].into(),
-                        amount_to_normalized(amount),
-                    );
-                }
-            });
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_mod_depth_released(move |target| {
-                let Some(destination) = mod_target(target) else {
-                    return;
-                };
-                let routes = read_routes(&state_for_ui);
-                if let Some(slot) = routes
-                    .iter()
-                    .position(|route| route.destination == Some(destination))
-                {
-                    let id = MOD_AMOUNT_PARAMS[slot];
-                    enqueue_edit(
-                        &pending_edits_for_ui,
-                        (id, f64::from(state_for_ui.get_param(id))),
-                    );
-                }
-            });
-
-            let mod_slot_model = Rc::new(slint::VecModel::from(vec![
-                ModRouteSlot::default();
-                MOD_SLOTS
-            ]));
-            ui.set_mod_slots(slint::ModelRc::from(mod_slot_model.clone()));
-            let knob_mod_model = Rc::new(slint::VecModel::from(vec![
-                KnobModulation::default();
-                ModDestination::ALL.len()
-            ]));
-            ui.set_knob_mods(slint::ModelRc::from(knob_mod_model.clone()));
-            let oscillator_model = Rc::new(slint::VecModel::from(vec![OscillatorRow::default()]));
-            ui.set_oscillators(slint::ModelRc::from(oscillator_model.clone()));
-            let destination_model = Rc::new(slint::VecModel::from(destination_options(1)));
-            ui.set_mod_destinations(slint::ModelRc::from(destination_model.clone()));
-
-            Box::new(move |state: &PluginContext<SynthParams>| {
-                for (id, value) in pending_edits.borrow_mut().drain(..) {
-                    state.automate(id, value);
-                }
-
-                ui.set_gain(state.get_param(SynthParamsParamId::Volume));
-                ui.set_gain_text(slint::SharedString::from(
-                    state.format_param(SynthParamsParamId::Volume),
-                ));
-                ui.set_attack(state.get_param(SynthParamsParamId::Attack));
-                ui.set_attack_text(slint::SharedString::from(
-                    state.format_param(SynthParamsParamId::Attack),
-                ));
-                ui.set_decay(state.get_param(SynthParamsParamId::Decay));
-                ui.set_decay_text(slint::SharedString::from(
-                    state.format_param(SynthParamsParamId::Decay),
-                ));
-                let sustain = state.get_param(SynthParamsParamId::Sustain);
-                ui.set_sustain(sustain);
-                ui.set_sustain_level(10.0_f32.powf((-60.0 + sustain * 60.0) / 20.0));
-                ui.set_sustain_text(slint::SharedString::from(
-                    state.format_param(SynthParamsParamId::Sustain),
-                ));
-                ui.set_release(state.get_param(SynthParamsParamId::Release));
-                ui.set_release_text(slint::SharedString::from(
-                    state.format_param(SynthParamsParamId::Release),
-                ));
-                ui.set_voices(state.params().voices.value_i32());
-                let oscillator_count = state.params().osc_count.value_usize();
-                let rows: Vec<_> = OSCILLATOR_PARAMS[..oscillator_count]
-                    .iter()
-                    .map(|params| oscillator_row(state, params))
-                    .collect();
-                sync_model(&oscillator_model, rows);
-                ui.set_filter_type(state.params().filter_type.index() as i32);
-                ui.set_filter_cutoff(state.get_param(SynthParamsParamId::FilterCutoff));
-                ui.set_filter_cutoff_text(slint::SharedString::from(
-                    state.format_param(SynthParamsParamId::FilterCutoff),
-                ));
-                ui.set_filter_q(state.get_param(SynthParamsParamId::FilterQ));
-                ui.set_filter_q_text(slint::SharedString::from(
-                    state.format_param(SynthParamsParamId::FilterQ),
-                ));
-                ui.set_lfo_shape(state.params().lfo_shape.index() as i32);
-                ui.set_lfo_rate(state.get_param(SynthParamsParamId::LfoRate));
-                ui.set_lfo_rate_text(slint::SharedString::from(
-                    state.format_param(SynthParamsParamId::LfoRate),
-                ));
-                ui.set_lfo_mode(state.params().lfo_mode.index() as i32);
-                // Runs every frame, so the markers follow the audio thread at
-                // block granularity. Rows are only touched when they change.
-                let phases = LFO_POSITION_METERS.map(|id| decode_lfo_position(state.get_meter(id)));
-                let newest = decode_lfo_newest(state.get_meter(SynthParamsParamId::LfoNewest));
-                for (row, marker) in lfo_markers(phases, newest).into_iter().enumerate() {
-                    if lfo_marker_model.row_data(row).as_ref() != Some(&marker) {
-                        lfo_marker_model.set_row_data(row, marker);
-                    }
-                }
-
-                let routes = read_routes(state);
-                let shown = shown_oscillators(oscillator_count, &routes);
-                if destination_model.row_count() != destination_options(shown).len() {
-                    destination_model.set_vec(destination_options(shown));
-                }
-                for (row, slot) in mod_route_slots(&routes, shown).into_iter().enumerate() {
-                    if mod_slot_model.row_data(row).as_ref() != Some(&slot) {
-                        mod_slot_model.set_row_data(row, slot);
-                    }
-                }
-                // Knobs follow the most recently started LFO.
-                let lfo = newest
-                    .and_then(|slot| phases.get(slot).copied().flatten())
-                    .or_else(|| phases.iter().find_map(|phase| *phase))
-                    .map(|phase| {
-                        let shape = lfo_shape_from_index(state.params().lfo_shape.index() as i32);
-                        naive_waveform_sample(shape, phase)
-                    });
-                let bases = ModDestination::ALL
-                    .map(|destination| state.get_param(destination_parameter(destination)));
-                for (row, modulation) in
-                    knob_modulation(&routes, bases, lfo).into_iter().enumerate()
-                {
-                    if knob_mod_model.row_data(row).as_ref() != Some(&modulation) {
-                        knob_mod_model.set_row_data(row, modulation);
-                    }
-                }
-            })
+            setup_editor(state, ui)
         },
     )
     .into_editor()
+}
+
+fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthParams> {
+    let pending_edits = Rc::new(RefCell::new(Vec::<(SynthParamsParamId, f64)>::new()));
+
+    let state_for_ui = state.clone();
+    ui.on_gain_changed(move |value| {
+        state_for_ui
+            .params()
+            .set_normalized(SynthParamsParamId::Volume.into(), f64::from(value));
+    });
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_gain_released(move || {
+        let id = SynthParamsParamId::Volume;
+        enqueue_edit(
+            &pending_edits_for_ui,
+            (id, f64::from(state_for_ui.get_param(id))),
+        );
+    });
+
+    let state_for_ui = state.clone();
+    ui.on_envelope_changed(move |id, value| {
+        if let Some(parameter) = envelope_parameter(id) {
+            state_for_ui
+                .params()
+                .set_normalized(parameter.into(), f64::from(value));
+        }
+    });
+    let state_for_ui = state.clone();
+    ui.on_envelope_sustain_level_changed(move |level| {
+        let sustain_db = 20.0 * level.clamp(0.001, 1.0).log10();
+        let normalized = ((sustain_db + 60.0) / 60.0).clamp(0.0, 1.0);
+        state_for_ui
+            .params()
+            .set_normalized(SynthParamsParamId::Sustain.into(), f64::from(normalized));
+    });
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_envelope_released(move |id| {
+        if let Some(parameter) = envelope_parameter(id) {
+            enqueue_edit(
+                &pending_edits_for_ui,
+                (parameter, f64::from(state_for_ui.get_param(parameter))),
+            );
+        }
+    });
+
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_voices_selected(move |count| {
+        let id = SynthParamsParamId::Voices;
+        let normalized = voices_to_normalized(count);
+        state_for_ui.params().set_normalized(id.into(), normalized);
+        enqueue_edit(&pending_edits_for_ui, (id, normalized));
+    });
+
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_oscillator_selected(move |oscillator, index| {
+        let Some(params) = oscillator_params(oscillator) else {
+            return;
+        };
+        let id = params.waveform;
+        let normalized = oscillator_to_normalized(index);
+        state_for_ui.params().set_normalized(id.into(), normalized);
+        enqueue_edit(&pending_edits_for_ui, (id, normalized));
+    });
+
+    let state_for_ui = state.clone();
+    ui.on_osc_changed(move |oscillator, id, value| {
+        if let Some(parameter) = oscillator_parameter(oscillator, id) {
+            state_for_ui
+                .params()
+                .set_normalized(parameter.into(), f64::from(value));
+        }
+    });
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_osc_released(move |oscillator, id| {
+        if let Some(parameter) = oscillator_parameter(oscillator, id) {
+            enqueue_edit(
+                &pending_edits_for_ui,
+                (parameter, f64::from(state_for_ui.get_param(parameter))),
+            );
+        }
+    });
+
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_oscillator_add(move || {
+        let count = state_for_ui.params().osc_count.value_usize();
+        if count < MAX_OSCILLATORS {
+            set_param(
+                &state_for_ui,
+                &pending_edits_for_ui,
+                SynthParamsParamId::OscCount,
+                oscillator_count_to_normalized(count + 1),
+            );
+        }
+    });
+
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_oscillator_remove(move |oscillator| {
+        let Ok(removed) = usize::try_from(oscillator) else {
+            return;
+        };
+        remove_oscillator(&state_for_ui, &pending_edits_for_ui, removed);
+    });
+
+    ui.on_oscillator_cycle_path(|index, phase, width, height| {
+        let waveform = oscillator_from_index(index);
+        slint::SharedString::from(waveform_cycle_path(waveform, phase, width, height))
+    });
+
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_filter_type_selected(move |index| {
+        let id = SynthParamsParamId::FilterType;
+        let normalized = filter_type_to_normalized(index);
+        state_for_ui.params().set_normalized(id.into(), normalized);
+        enqueue_edit(&pending_edits_for_ui, (id, normalized));
+    });
+
+    let state_for_ui = state.clone();
+    ui.on_filter_changed(move |id, value| {
+        if let Some(parameter) = filter_parameter(id) {
+            state_for_ui
+                .params()
+                .set_normalized(parameter.into(), f64::from(value));
+        }
+    });
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_filter_released(move |id| {
+        if let Some(parameter) = filter_parameter(id) {
+            enqueue_edit(
+                &pending_edits_for_ui,
+                (parameter, f64::from(state_for_ui.get_param(parameter))),
+            );
+        }
+    });
+
+    // Takes the knobs' normalized values so the plot tracks a drag
+    // without waiting for the next sync.
+    let state_for_ui = state.clone();
+    ui.on_filter_response_path(move |index, cutoff, q, width, height| {
+        let params = state_for_ui.params();
+        let settings = FilterSettings {
+            mode: filter_mode_from_index(index),
+            cutoff_hz: params
+                .filter_cutoff
+                .info
+                .range
+                .denormalize(f64::from(cutoff)) as f32,
+            q: params.filter_q.info.range.denormalize(f64::from(q)) as f32,
+        };
+        slint::SharedString::from(filter_response_path(settings, width, height))
+    });
+
+    let selected_lfo = {
+        let ui = ui.as_weak();
+        move || {
+            ui.upgrade()
+                .expect("LFO callback requires a live editor")
+                .get_current_lfo() as usize
+        }
+    };
+
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_lfo_add(move || {
+        let count = state_for_ui.params().lfo_count.value_usize();
+        if count < MAX_LFOS {
+            reset_lfo(&state_for_ui, &pending_edits_for_ui, count);
+            set_param(
+                &state_for_ui,
+                &pending_edits_for_ui,
+                SynthParamsParamId::LfoCount,
+                lfo_count_to_normalized(count + 1),
+            );
+        }
+    });
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_lfo_remove(move |index| {
+        if let Ok(index) = usize::try_from(index) {
+            remove_lfo(&state_for_ui, &pending_edits_for_ui, index);
+        }
+    });
+
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    let selected = selected_lfo.clone();
+    ui.on_lfo_shape_selected(move |index| {
+        let id = LFO_PARAMS[selected()].shape;
+        let normalized = lfo_shape_to_normalized(index);
+        state_for_ui.params().set_normalized(id.into(), normalized);
+        enqueue_edit(&pending_edits_for_ui, (id, normalized));
+    });
+
+    let state_for_ui = state.clone();
+    let selected = selected_lfo.clone();
+    ui.on_lfo_rate_changed(move |value| {
+        state_for_ui
+            .params()
+            .set_normalized(LFO_PARAMS[selected()].rate.into(), f64::from(value));
+    });
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    let selected = selected_lfo.clone();
+    ui.on_lfo_rate_released(move || {
+        let id = LFO_PARAMS[selected()].rate;
+        enqueue_edit(
+            &pending_edits_for_ui,
+            (id, f64::from(state_for_ui.get_param(id))),
+        );
+    });
+
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    let selected = selected_lfo.clone();
+    ui.on_lfo_mode_selected(move |index| {
+        let id = LFO_PARAMS[selected()].mode;
+        let normalized = lfo_mode_to_normalized(index);
+        state_for_ui.params().set_normalized(id.into(), normalized);
+        enqueue_edit(&pending_edits_for_ui, (id, normalized));
+    });
+
+    ui.on_lfo_cycle_path(|index, width, height| {
+        let waveform = lfo_shape_from_index(index);
+        slint::SharedString::from(lfo_cycle_path(waveform, width, height))
+    });
+
+    let lfo_marker_model = Rc::new(slint::VecModel::from(vec![
+        PositionMarker::default();
+        MAX_VOICES
+    ]));
+    ui.set_lfo_markers(slint::ModelRc::from(lfo_marker_model.clone()));
+
+    // Writes a routing slot's parameters and records them for the host.
+    let set_slot = {
+        let pending_edits = pending_edits.clone();
+        let state = state.clone();
+        let selected = selected_lfo.clone();
+        move |slot: usize, destination: Option<Option<ModDestination>>, amount: Option<f32>| {
+            if let Some(destination) = destination {
+                let id = LFO_PARAMS[selected()].destinations[slot];
+                let normalized = destination_to_normalized(destination);
+                state.params().set_normalized(id.into(), normalized);
+                enqueue_edit(&pending_edits, (id, normalized));
+            }
+            if let Some(amount) = amount {
+                let id = LFO_PARAMS[selected()].amounts[slot];
+                let normalized = amount_to_normalized(amount);
+                state.params().set_normalized(id.into(), normalized);
+                enqueue_edit(&pending_edits, (id, normalized));
+            }
+        }
+    };
+
+    let state_for_ui = state.clone();
+    let set_slot_for_ui = set_slot.clone();
+    let selected = selected_lfo.clone();
+    ui.on_mod_assign(move |target| {
+        let Some(destination) = mod_target(target) else {
+            return;
+        };
+        if let Some(slot) = slot_for_new_route(&read_routes(&state_for_ui, selected()), destination)
+        {
+            set_slot_for_ui(
+                slot,
+                Some(Some(destination)),
+                Some(default_mod_amount(destination)),
+            );
+        }
+    });
+
+    let state_for_ui = state.clone();
+    let set_slot_for_ui = set_slot.clone();
+    let selected = selected_lfo.clone();
+    ui.on_mod_destination_selected(move |slot, index| {
+        let Some(slot) = mod_slot(slot) else {
+            return;
+        };
+        let routes = read_routes(&state_for_ui, selected());
+        let shown = shown_oscillators(state_for_ui.params().osc_count.value_usize(), &routes);
+        let destination = destination_from_option(shown, index);
+        let route = routes[slot];
+        // A freshly routed slot starts at a useful depth rather than zero.
+        let amount = match destination {
+            Some(destination) if route.amount == 0.0 => Some(default_mod_amount(destination)),
+            _ => None,
+        };
+        set_slot_for_ui(slot, Some(destination), amount);
+    });
+
+    let state_for_ui = state.clone();
+    let selected = selected_lfo.clone();
+    ui.on_mod_amount_changed(move |slot, value| {
+        if let Some(slot) = mod_slot(slot) {
+            state_for_ui.params().set_normalized(
+                LFO_PARAMS[selected()].amounts[slot].into(),
+                f64::from(value),
+            );
+        }
+    });
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    let selected = selected_lfo.clone();
+    ui.on_mod_amount_released(move |slot| {
+        if let Some(slot) = mod_slot(slot) {
+            let id = LFO_PARAMS[selected()].amounts[slot];
+            enqueue_edit(
+                &pending_edits_for_ui,
+                (id, f64::from(state_for_ui.get_param(id))),
+            );
+        }
+    });
+
+    let set_slot_for_ui = set_slot.clone();
+    ui.on_mod_remove(move |slot| {
+        if let Some(slot) = mod_slot(slot) {
+            set_slot_for_ui(slot, Some(None), Some(0.0));
+        }
+    });
+
+    let state_for_ui = state.clone();
+    let selected = selected_lfo.clone();
+    ui.on_mod_depth_changed(move |target, depth| {
+        let Some(destination) = mod_target(target) else {
+            return;
+        };
+        if let Some((slot, amount)) =
+            depth_edit(&read_routes(&state_for_ui, selected()), destination, depth)
+        {
+            state_for_ui.params().set_normalized(
+                LFO_PARAMS[selected()].amounts[slot].into(),
+                amount_to_normalized(amount),
+            );
+        }
+    });
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    let selected = selected_lfo.clone();
+    ui.on_mod_depth_released(move |target| {
+        let Some(destination) = mod_target(target) else {
+            return;
+        };
+        let routes = read_routes(&state_for_ui, selected());
+        if let Some(slot) = routes
+            .iter()
+            .position(|route| route.destination == Some(destination))
+        {
+            let id = LFO_PARAMS[selected()].amounts[slot];
+            enqueue_edit(
+                &pending_edits_for_ui,
+                (id, f64::from(state_for_ui.get_param(id))),
+            );
+        }
+    });
+
+    let mod_slot_model = Rc::new(slint::VecModel::from(vec![
+        ModRouteSlot::default();
+        MOD_SLOTS
+    ]));
+    ui.set_mod_slots(slint::ModelRc::from(mod_slot_model.clone()));
+    let knob_mod_model = Rc::new(slint::VecModel::from(vec![
+        KnobModulation::default();
+        ModDestination::ALL.len()
+    ]));
+    ui.set_knob_mods(slint::ModelRc::from(knob_mod_model.clone()));
+    let oscillator_model = Rc::new(slint::VecModel::from(vec![OscillatorRow::default()]));
+    ui.set_oscillators(slint::ModelRc::from(oscillator_model.clone()));
+    let destination_model = Rc::new(slint::VecModel::from(destination_options(1)));
+    ui.set_mod_destinations(slint::ModelRc::from(destination_model.clone()));
+
+    Box::new(move |state: &PluginContext<SynthParams>| {
+        for (id, value) in pending_edits.borrow_mut().drain(..) {
+            state.automate(id, value);
+        }
+
+        ui.set_gain(state.get_param(SynthParamsParamId::Volume));
+        ui.set_gain_text(slint::SharedString::from(
+            state.format_param(SynthParamsParamId::Volume),
+        ));
+        ui.set_attack(state.get_param(SynthParamsParamId::Attack));
+        ui.set_attack_text(slint::SharedString::from(
+            state.format_param(SynthParamsParamId::Attack),
+        ));
+        ui.set_decay(state.get_param(SynthParamsParamId::Decay));
+        ui.set_decay_text(slint::SharedString::from(
+            state.format_param(SynthParamsParamId::Decay),
+        ));
+        let sustain = state.get_param(SynthParamsParamId::Sustain);
+        ui.set_sustain(sustain);
+        ui.set_sustain_level(10.0_f32.powf((-60.0 + sustain * 60.0) / 20.0));
+        ui.set_sustain_text(slint::SharedString::from(
+            state.format_param(SynthParamsParamId::Sustain),
+        ));
+        ui.set_release(state.get_param(SynthParamsParamId::Release));
+        ui.set_release_text(slint::SharedString::from(
+            state.format_param(SynthParamsParamId::Release),
+        ));
+        ui.set_voices(state.params().voices.value_i32());
+        let oscillator_count = state.params().osc_count.value_usize();
+        let rows: Vec<_> = OSCILLATOR_PARAMS[..oscillator_count]
+            .iter()
+            .map(|params| oscillator_row(state, params))
+            .collect();
+        sync_model(&oscillator_model, rows);
+        ui.set_filter_type(state.params().filter_type.index() as i32);
+        ui.set_filter_cutoff(state.get_param(SynthParamsParamId::FilterCutoff));
+        ui.set_filter_cutoff_text(slint::SharedString::from(
+            state.format_param(SynthParamsParamId::FilterCutoff),
+        ));
+        ui.set_filter_q(state.get_param(SynthParamsParamId::FilterQ));
+        ui.set_filter_q_text(slint::SharedString::from(
+            state.format_param(SynthParamsParamId::FilterQ),
+        ));
+        let lfo_count = state.params().lfo_count.value_usize();
+        ui.set_lfo_count(lfo_count as i32);
+        let selected = ui.get_current_lfo() as usize;
+        let ids = &LFO_PARAMS[selected];
+        ui.set_lfo_shape(
+            (state.get_param(ids.shape) * (LfoShapeType::variant_count() - 1) as f32).round()
+                as i32,
+        );
+        ui.set_lfo_rate(state.get_param(ids.rate));
+        ui.set_lfo_rate_text(slint::SharedString::from(state.format_param(ids.rate)));
+        ui.set_lfo_mode(
+            (state.get_param(ids.mode) * (LfoModeType::variant_count() - 1) as f32).round() as i32,
+        );
+        // Runs every frame, so the markers follow the audio thread at
+        // block granularity. Rows are only touched when they change.
+        let phases = ids
+            .positions
+            .map(|id| decode_lfo_position(state.get_meter(id)));
+        let newest = decode_lfo_newest(state.get_meter(ids.newest));
+        for (row, marker) in lfo_markers(phases, newest).into_iter().enumerate() {
+            if lfo_marker_model.row_data(row).as_ref() != Some(&marker) {
+                lfo_marker_model.set_row_data(row, marker);
+            }
+        }
+
+        let routes = if lfo_count > 0 {
+            read_routes(state, selected)
+        } else {
+            [ModRoute::default(); MOD_SLOTS]
+        };
+        let shown = shown_oscillators(oscillator_count, &routes);
+        if destination_model.row_count() != destination_options(shown).len() {
+            destination_model.set_vec(destination_options(shown));
+        }
+        for (row, slot) in mod_route_slots(&routes, shown).into_iter().enumerate() {
+            if mod_slot_model.row_data(row).as_ref() != Some(&slot) {
+                mod_slot_model.set_row_data(row, slot);
+            }
+        }
+        let bases = ModDestination::ALL
+            .map(|destination| state.get_param(destination_parameter(destination)));
+        let sources = std::array::from_fn(|index| {
+            if index >= lfo_count {
+                return ([ModRoute::default(); MOD_SLOTS], None);
+            }
+            let ids = &LFO_PARAMS[index];
+            let phases = ids
+                .positions
+                .map(|id| decode_lfo_position(state.get_meter(id)));
+            let newest = decode_lfo_newest(state.get_meter(ids.newest));
+            let phase = newest.and_then(|slot| phases.get(slot).copied().flatten());
+            let value = phase.map(|phase| {
+                let shape = lfo_shape_from_index(
+                    (state.get_param(ids.shape) * (LfoShapeType::variant_count() - 1) as f32)
+                        .round() as i32,
+                );
+                naive_waveform_sample(shape, phase)
+            });
+            (read_routes(state, index), value)
+        });
+        let mods = combined_knob_modulation(&routes, bases, &sources);
+        for (row, modulation) in mods.into_iter().enumerate() {
+            if knob_mod_model.row_data(row).as_ref() != Some(&modulation) {
+                knob_mod_model.set_row_data(row, modulation);
+            }
+        }
+    })
 }
 
 /// Updates `model` to `rows`, touching only rows that changed.
@@ -500,6 +565,49 @@ fn set_param(
     enqueue_edit(edits, (id, normalized));
 }
 
+fn lfo_count_to_normalized(count: usize) -> f64 {
+    count.min(MAX_LFOS) as f64 / MAX_LFOS as f64
+}
+
+fn reset_lfo(
+    state: &PluginContext<SynthParams>,
+    edits: &Rc<RefCell<Vec<(SynthParamsParamId, f64)>>>,
+    index: usize,
+) {
+    let infos = state.params().param_infos();
+    for id in LFO_PARAMS[index].all() {
+        let info = infos
+            .iter()
+            .find(|info| info.id == u32::from(id))
+            .expect("LFO parameters must have parameter metadata");
+        set_param(state, edits, id, info.range.normalize(info.default_plain));
+    }
+}
+
+fn remove_lfo(
+    state: &PluginContext<SynthParams>,
+    edits: &Rc<RefCell<Vec<(SynthParamsParamId, f64)>>>,
+    removed: usize,
+) {
+    let count = state.params().lfo_count.value_usize();
+    if removed >= count {
+        return;
+    }
+    let values = LFO_PARAMS.map(|ids| ids.all().map(|id| f64::from(state.get_param(id))));
+    for index in removed..count - 1 {
+        for (id, value) in LFO_PARAMS[index].all().into_iter().zip(values[index + 1]) {
+            set_param(state, edits, id, value);
+        }
+    }
+    reset_lfo(state, edits, count - 1);
+    set_param(
+        state,
+        edits,
+        SynthParamsParamId::LfoCount,
+        lfo_count_to_normalized(count - 1),
+    );
+}
+
 /// Removes oscillator `removed`: later oscillators move down to fill its
 /// place, the last one returns to its defaults, and LFO routes follow the
 /// oscillators they target, those to the removed one being cleared.
@@ -533,24 +641,26 @@ fn remove_oscillator(
         }
     }
 
-    let routes = read_routes(state);
-    let remapped = routes_after_removal(&routes, removed);
-    for (slot, (old, new)) in routes.iter().zip(&remapped).enumerate() {
-        if old.destination != new.destination {
-            set_param(
-                state,
-                edits,
-                MOD_DESTINATION_PARAMS[slot],
-                destination_to_normalized(new.destination),
-            );
-        }
-        if old.amount != new.amount {
-            set_param(
-                state,
-                edits,
-                MOD_AMOUNT_PARAMS[slot],
-                amount_to_normalized(new.amount),
-            );
+    for (lfo, ids) in LFO_PARAMS.iter().enumerate() {
+        let routes = read_routes(state, lfo);
+        let remapped = routes_after_removal(&routes, removed);
+        for (slot, (old, new)) in routes.iter().zip(&remapped).enumerate() {
+            if old.destination != new.destination {
+                set_param(
+                    state,
+                    edits,
+                    ids.destinations[slot],
+                    destination_to_normalized(new.destination),
+                );
+            }
+            if old.amount != new.amount {
+                set_param(
+                    state,
+                    edits,
+                    ids.amounts[slot],
+                    amount_to_normalized(new.amount),
+                );
+            }
         }
     }
 
@@ -835,11 +945,12 @@ fn mod_slot(slot: i32) -> Option<usize> {
     usize::try_from(slot).ok().filter(|&slot| slot < MOD_SLOTS)
 }
 
-fn read_routes(state: &PluginContext<SynthParams>) -> [ModRoute; MOD_SLOTS] {
+fn read_routes(state: &PluginContext<SynthParams>, lfo: usize) -> [ModRoute; MOD_SLOTS] {
+    let ids = &LFO_PARAMS[lfo];
     std::array::from_fn(|slot| {
-        let destination = state.get_param(MOD_DESTINATION_PARAMS[slot]);
+        let destination = state.get_param(ids.destinations[slot]);
         let index = (destination * destination_steps() as f32).round();
-        let amount = state.get_param(MOD_AMOUNT_PARAMS[slot]);
+        let amount = state.get_param(ids.amounts[slot]);
         ModRoute {
             destination: mod_destination_from_index(index as u32),
             amount: (2.0 * amount - 1.0).clamp(-1.0, 1.0),
@@ -971,6 +1082,33 @@ fn knob_modulation(
     })
 }
 
+fn combined_knob_modulation(
+    selected_routes: &[ModRoute],
+    bases: [f32; ModDestination::ALL.len()],
+    sources: &[([ModRoute; MOD_SLOTS], Option<f32>); MAX_LFOS],
+) -> [KnobModulation; ModDestination::ALL.len()] {
+    let mut mods = knob_modulation(selected_routes, bases, None);
+    for destination in ModDestination::ALL {
+        let mut offset = 0.0;
+        let mut live = false;
+        for (routes, value) in sources {
+            if let Some(value) = value {
+                for route in routes
+                    .iter()
+                    .filter(|route| route.destination == Some(destination))
+                {
+                    offset += route.amount * value;
+                    live |= route.amount != 0.0;
+                }
+            }
+        }
+        let index = destination.index();
+        mods[index].live = (bases[index] + offset).clamp(0.0, 1.0);
+        mods[index].live_visible = live && mods[index].routed;
+    }
+    mods
+}
+
 fn envelope_parameter(id: i32) -> Option<SynthParamsParamId> {
     match id {
         0 => Some(SynthParamsParamId::Attack),
@@ -984,6 +1122,187 @@ fn envelope_parameter(id: i32) -> Option<SynthParamsParamId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn editor_test_context(params: Arc<SynthParams>) -> PluginContext<SynthParams> {
+        use truce_slint::truce_core::editor::ClosureBridge;
+        let set_params = params.clone();
+        let get_params = params.clone();
+        let plain_params = params.clone();
+        let format_params = params.clone();
+        let bridge = ClosureBridge {
+            begin_edit: Box::new(|_| {}),
+            set_param: Box::new(move |id, value| set_params.set_normalized(id, value)),
+            end_edit: Box::new(|_| {}),
+            request_resize: Box::new(|_, _| false),
+            get_param: Box::new(move |id| get_params.get_normalized(id).unwrap()),
+            get_param_plain: Box::new(move |id| plain_params.get_plain(id).unwrap()),
+            format_param: Box::new(move |id| {
+                format_params
+                    .format_value(id, format_params.get_plain(id).unwrap())
+                    .unwrap()
+            }),
+            get_meter: Box::new(|_| 0.0),
+            get_state: Box::new(Vec::new),
+            set_state: Box::new(|_| panic!("unexpected custom-state edit")),
+            transport: Box::new(|| None),
+        };
+        PluginContext::new(Arc::new(bridge), params)
+    }
+
+    #[test]
+    fn modulator_tabs_add_edit_remove_and_render_empty() {
+        use slint::ComponentHandle;
+        use slint::platform::software_renderer::PremultipliedRgbaColor;
+
+        truce_slint::platform::ensure_platform();
+        let window = truce_slint::platform::create_slint_window();
+        window.set_size(slint::PhysicalSize::new(720, 1010));
+        let ui = SynthUi::new().unwrap();
+        let params = Arc::new(SynthParams::default());
+        let state = editor_test_context(params.clone());
+        let sync = setup_editor(state.clone(), ui.clone_strong());
+        sync(&state);
+        assert_eq!(ui.get_lfo_count(), 0);
+        ui.show().unwrap();
+        let mut pixels = vec![PremultipliedRgbaColor::default(); 720 * 1010];
+        assert!(window.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 720);
+        }));
+        let empty_pixels: Vec<_> = pixels
+            .iter()
+            .map(|pixel| (pixel.red, pixel.green, pixel.blue))
+            .collect();
+        assert_eq!(
+            empty_pixels[500 * 720 + 20],
+            (32, 35, 43),
+            "the empty Modulators panel must collapse so the output envelope stays visible"
+        );
+
+        params.set_normalized(SynthParamsParamId::OscCount.into(), 1.0 / 3.0);
+        for index in 0..MAX_LFOS {
+            ui.set_selected_lfo(index as i32);
+            ui.invoke_lfo_add();
+            sync(&state);
+            assert_eq!(ui.get_current_lfo(), index as i32);
+            ui.invoke_lfo_shape_selected(index as i32);
+            ui.invoke_lfo_rate_changed(index as f32 / 4.0);
+            ui.invoke_lfo_rate_released();
+            ui.invoke_lfo_mode_selected((index % 2) as i32);
+            ui.invoke_mod_assign(ModDestination::OscLevel(1).index() as i32);
+            ui.invoke_mod_amount_changed(0, 0.6 + index as f32 * 0.1);
+            ui.invoke_mod_amount_released(0);
+            sync(&state);
+            assert_eq!(ui.get_lfo_shape(), index as i32);
+            assert_eq!(
+                read_routes(&state, index)[0].destination,
+                Some(ModDestination::OscLevel(1))
+            );
+        }
+        ui.invoke_lfo_add();
+        sync(&state);
+        assert_eq!(params.lfo_count.value_usize(), MAX_LFOS);
+        window.request_redraw();
+        assert!(window.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 720);
+        }));
+        let active_pixels: Vec<_> = pixels
+            .iter()
+            .map(|pixel| (pixel.red, pixel.green, pixel.blue))
+            .collect();
+        assert_ne!(active_pixels, empty_pixels);
+        let untouched = read_routes(&state, 0);
+        ui.invoke_mod_depth_changed(ModDestination::OscLevel(1).index() as i32, -0.25);
+        ui.invoke_mod_depth_released(ModDestination::OscLevel(1).index() as i32);
+        sync(&state);
+        assert_eq!(read_routes(&state, 3)[0].amount, -0.25);
+        assert_eq!(read_routes(&state, 0), untouched);
+
+        ui.invoke_oscillator_remove(0);
+        sync(&state);
+        for index in 0..MAX_LFOS {
+            assert_eq!(
+                read_routes(&state, index)[0].destination,
+                Some(ModDestination::OscLevel(0))
+            );
+        }
+
+        let before = LFO_PARAMS.map(|ids| ids.all().map(|id| state.get_param(id)));
+        ui.invoke_lfo_remove(1);
+        sync(&state);
+        assert_eq!(params.lfo_count.value_usize(), 3);
+        assert_eq!(ui.get_current_lfo(), 2);
+        for (index, expected) in [(0, before[0]), (1, before[2]), (2, before[3])] {
+            assert_eq!(
+                LFO_PARAMS[index].all().map(|id| state.get_param(id)),
+                expected
+            );
+        }
+        let defaults = SynthParams::default();
+        for id in LFO_PARAMS[3].all() {
+            assert_eq!(
+                params.get_normalized(id.into()),
+                defaults.get_normalized(id.into())
+            );
+        }
+        for _ in 0..3 {
+            ui.invoke_lfo_remove(0);
+            sync(&state);
+        }
+        assert_eq!(ui.get_lfo_count(), 0);
+        assert_eq!(ui.get_current_lfo(), 0);
+        assert!(
+            ui.get_knob_mods()
+                .iter()
+                .all(|modulation| !modulation.routed)
+        );
+        ui.set_selected_lfo(0);
+        ui.invoke_lfo_add();
+        sync(&state);
+        assert_eq!(ui.get_lfo_shape(), 0);
+        assert_eq!(ui.get_lfo_mode(), 0);
+        assert_eq!(read_routes(&state, 0), [ModRoute::default(); MOD_SLOTS]);
+        ui.invoke_mod_destination_selected(2, 3);
+        sync(&state);
+        assert_eq!(
+            read_routes(&state, 0)[2].destination,
+            Some(ModDestination::FilterCutoff)
+        );
+        ui.invoke_mod_remove(2);
+        sync(&state);
+        assert_eq!(read_routes(&state, 0)[2], ModRoute::default());
+
+        params.set_normalized(SynthParamsParamId::LfoCount.into(), 1.0);
+        sync(&state);
+        ui.set_selected_lfo(3);
+        params.set_normalized(SynthParamsParamId::LfoCount.into(), 0.0);
+        sync(&state);
+        assert_eq!(ui.get_lfo_count(), 0);
+        assert_eq!(ui.get_current_lfo(), 0);
+    }
+
+    #[test]
+    fn live_knob_dot_combines_lfos_but_depth_edits_are_selected() {
+        let target = ModDestination::FilterCutoff;
+        let first = routes(&[(Some(target), 0.4)]);
+        let second = routes(&[(Some(target), -0.2)]);
+        let mut sources = [([ModRoute::default(); MOD_SLOTS], None); MAX_LFOS];
+        sources[0] = (first, Some(1.0));
+        sources[1] = (second, Some(-0.5));
+        let modulation =
+            combined_knob_modulation(&second, [0.25; ModDestination::ALL.len()], &sources);
+        let cutoff = &modulation[target.index()];
+        assert!((cutoff.live - 0.75).abs() < 1e-6);
+        assert_eq!(cutoff.depth, -0.2);
+        assert!(cutoff.live_visible);
+        assert_eq!(depth_edit(&second, target, 0.1), Some((0, 0.1)));
+        sources[0].1 = None;
+        sources[1].1 = None;
+        assert!(
+            !combined_knob_modulation(&second, [0.25; ModDestination::ALL.len()], &sources)
+                [target.index()]
+            .live_visible
+        );
+    }
 
     fn points(commands: &str) -> Vec<(f32, f32)> {
         commands
