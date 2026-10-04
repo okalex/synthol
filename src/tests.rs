@@ -289,3 +289,33 @@ fn oscillator_parameter_changes_rendered_waveform() {
         "sawtooth rose on {rising} samples"
     );
 }
+
+#[test]
+fn phase_parameter_sets_where_notes_start() {
+    use std::time::Duration;
+    use truce_test::driver;
+
+    let first_sample = |normalized_phase| {
+        let result = driver!(Plugin)
+            .duration(Duration::from_millis(10))
+            .set_param(crate::plugin::SynthParamsParamId::Phase, normalized_phase)
+            .set_param(crate::plugin::SynthParamsParamId::Attack, 0.0)
+            .script(|script| script.note_on(57, 1.0))
+            .run();
+        let output = &result.output[0];
+        let start = output
+            .iter()
+            .position(|sample| *sample != 0.0)
+            .expect("the note should sound");
+        output[start]
+    };
+
+    // A sine starting at 0 degrees rises from zero; at 90 degrees it starts
+    // at its peak and at 270 degrees at its trough.
+    let at_0 = first_sample(0.0);
+    let at_90 = first_sample(0.25);
+    let at_270 = first_sample(0.75);
+    assert!(at_0.abs() < 0.05, "0 degrees started at {at_0}");
+    assert!(at_90 > 0.5, "90 degrees started at {at_90}");
+    assert!(at_270 < -0.5, "270 degrees started at {at_270}");
+}

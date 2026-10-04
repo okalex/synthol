@@ -436,13 +436,15 @@ export component AdsrEnvelopePanel inherits Rectangle {
     }
 }
 
-// Plots one cycle of an oscillator waveform from 0 to 360 degrees. The shape
-// is computed by the `cycle-path` callback, which returns SVG path commands in
-// pixel coordinates for the given plot size, so new or morphed waveforms need
-// no UI changes.
+// Plots one cycle of an oscillator waveform from 0 to 360 degrees, starting
+// at the normalized start `phase`. The shape is computed by the `cycle-path`
+// callback (waveform, phase, width, height), which returns SVG path commands
+// in pixel coordinates for the given plot size, so new or morphed waveforms
+// need no UI changes.
 export component WaveformDisplay inherits Rectangle {
     in property <int> waveform: 0;
-    pure callback cycle-path(int, float, float) -> string;
+    in property <float> phase: 0.0;
+    pure callback cycle-path(int, float, float, float) -> string;
 
     private property <length> plot-left: 10px;
     private property <length> plot-right: self.width - 10px;
@@ -483,7 +485,7 @@ export component WaveformDisplay inherits Rectangle {
         height: root.plot-height + self.stroke-width;
         viewbox-width: root.plot-width / 1px;
         viewbox-height: root.plot-height / 1px;
-        commands: root.cycle-path(root.waveform, root.plot-width / 1px, root.plot-height / 1px);
+        commands: root.cycle-path(root.waveform, root.phase, root.plot-width / 1px, root.plot-height / 1px);
         stroke: #56a7ff;
         stroke-width: 2px;
     }

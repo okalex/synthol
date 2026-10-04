@@ -29,6 +29,10 @@ impl Voice {
         self.oscillator.set_waveform(waveform);
     }
 
+    pub(super) fn set_start_phase(&mut self, phase: f32) {
+        self.oscillator.set_start_phase(phase);
+    }
+
     pub(super) fn note_on(&mut self, note: u8, velocity: u8, started_at: u64) {
         self.oscillator
             .handle_event(MidiEvent::NoteOn { note, velocity });

@@ -1,4 +1,4 @@
-import { AdsrEnvelopePanel, Dropdown, WaveformDisplay } from "controls.slint";
+import { AdsrEnvelopePanel, Dropdown, SynthKnob, WaveformDisplay } from "controls.slint";
 
 import "JetBrainsMono-Regular.ttf";
 
@@ -102,6 +102,8 @@ export component SynthUi inherits Window {
     in-out property <string> release-text: "1000.0 ms";
     in-out property <int> voices: 8;
     in-out property <int> oscillator: 0;
+    in-out property <float> phase: 0.0;
+    in-out property <string> phase-text: "0.0 °";
     callback gain-pressed();
     callback gain-changed(float);
     callback gain-released();
@@ -111,11 +113,13 @@ export component SynthUi inherits Window {
     callback envelope-released(int);
     callback voices-selected(int);
     callback oscillator-selected(int);
-    pure callback oscillator-cycle-path(int, float, float) -> string;
+    callback phase-changed(float);
+    callback phase-released();
+    pure callback oscillator-cycle-path(int, float, float, float) -> string;
 
     title: "Synthol";
     preferred-width: 720px;
-    preferred-height: 600px;
+    preferred-height: 640px;
     background: #17191f;
     default-font-family: "JetBrains Mono";
 
@@ -184,11 +188,24 @@ export component SynthUi inherits Window {
                     }
                 }
 
-                WaveformDisplay {
-                    waveform: root.oscillator;
-                    cycle-path(waveform, width, height) => {
-                        return root.oscillator-cycle-path(waveform, width, height);
+                VerticalLayout {
+                    alignment: center;
+
+                    WaveformDisplay {
+                        waveform: root.oscillator;
+                        phase: root.phase;
+                        cycle-path(waveform, phase, width, height) => {
+                            return root.oscillator-cycle-path(waveform, phase, width, height);
+                        }
                     }
+                }
+
+                SynthKnob {
+                    value <=> root.phase;
+                    label: "PHASE";
+                    value-text: root.phase-text;
+                    changed(_, value) => { root.phase-changed(value); }
+                    released(_) => { root.phase-released(); }
                 }
 
                 Rectangle { width: 16px; }

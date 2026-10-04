@@ -62,6 +62,14 @@ impl SynthEngine {
         }
     }
 
+    /// Set the normalized oscillator phase (`0.0..1.0`, 0 to 360 degrees)
+    /// that new notes start from.
+    pub fn set_start_phase(&mut self, phase: f32) {
+        for voice in &mut self.voices {
+            voice.set_start_phase(phase);
+        }
+    }
+
     /// Limit how many voices new notes may use (clamped to `1..=MAX_VOICES`).
     /// Held voices above a lowered limit are released and allowed to finish.
     pub fn set_voice_limit(&mut self, limit: usize) {

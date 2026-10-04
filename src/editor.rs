@@ -15,7 +15,7 @@ slint::include_modules!();
 pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
     SlintEditor::new(
         params.clone(),
-        (720, 600),
+        (720, 640),
         |state: PluginContext<SynthParams>| -> SyncFn<SynthParams> {
             let ui = SynthUi::new().expect("failed to create Slint editor");
             let pending_edits = Rc::new(RefCell::new(Vec::<(SynthParamsParamId, f64)>::new()));
@@ -81,9 +81,25 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
                 enqueue_edit(&pending_edits_for_ui, (id, normalized));
             });
 
-            ui.on_oscillator_cycle_path(|index, width, height| {
+            let state_for_ui = state.clone();
+            ui.on_phase_changed(move |value| {
+                state_for_ui
+                    .params()
+                    .set_normalized(SynthParamsParamId::Phase.into(), f64::from(value));
+            });
+            let pending_edits_for_ui = pending_edits.clone();
+            let state_for_ui = state.clone();
+            ui.on_phase_released(move || {
+                let id = SynthParamsParamId::Phase;
+                enqueue_edit(
+                    &pending_edits_for_ui,
+                    (id, f64::from(state_for_ui.get_param(id))),
+                );
+            });
+
+            ui.on_oscillator_cycle_path(|index, phase, width, height| {
                 let waveform = oscillator_from_index(index);
-                slint::SharedString::from(waveform_cycle_path(waveform, width, height))
+                slint::SharedString::from(waveform_cycle_path(waveform, phase, width, height))
             });
 
             Box::new(move |state: &PluginContext<SynthParams>| {
@@ -115,6 +131,10 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
                 ));
                 ui.set_voices(state.params().voices.value_i32());
                 ui.set_oscillator(state.params().oscillator.index() as i32);
+                ui.set_phase(state.get_param(SynthParamsParamId::Phase));
+                ui.set_phase_text(slint::SharedString::from(
+                    state.format_param(SynthParamsParamId::Phase),
+                ));
             })
         },
     )
@@ -151,11 +171,12 @@ fn oscillator_from_index(index: i32) -> Waveform {
 /// Segments per drawn cycle; enough that band-limited edges look vertical.
 const CYCLE_PATH_SEGMENTS: usize = 256;
 
-/// SVG path commands tracing one cycle of `waveform` across a `width` by
-/// `height` box: 0 degrees on the left, 360 on the right, +1 at the top.
-fn waveform_cycle_path(waveform: Waveform, width: f32, height: f32) -> String {
-    let mut samples = [0.0; CYCLE_PATH_SEGMENTS + 1];
-    render_cycle(waveform, &mut samples);
+/// SVG path commands tracing one cycle of `waveform`, starting at normalized
+/// `start_phase`, across a `width` by `height` box: 0 degrees after the start
+/// on the left, 360 on the right, +1 at the top.
+fn waveform_cycle_path(waveform: Waveform, start_phase: f32, width: f32, height: f32) -> String {
+    let mut samples = [0.0_f32; CYCLE_PATH_SEGMENTS + 1];
+    render_cycle(waveform, start_phase, &mut samples);
 
     let mut commands = String::with_capacity(samples.len() * 16);
     for (index, sample) in samples.iter().enumerate() {
@@ -196,7 +217,7 @@ mod tests {
 
     #[test]
     fn cycle_path_spans_the_box_from_0_to_360_degrees() {
-        let commands = waveform_cycle_path(Waveform::Sine, 200.0, 50.0);
+        let commands = waveform_cycle_path(Waveform::Sine, 0.0, 200.0, 50.0);
         assert!(commands.starts_with('M'));
         let points = points(&commands);
         assert_eq!(points.len(), CYCLE_PATH_SEGMENTS + 1);
@@ -212,12 +233,21 @@ mod tests {
     #[test]
     fn cycle_path_follows_the_selected_oscillator() {
         let paths: Vec<_> = (0..OscillatorType::variant_count() as i32)
-            .map(|index| waveform_cycle_path(oscillator_from_index(index), 100.0, 40.0))
+            .map(|index| waveform_cycle_path(oscillator_from_index(index), 0.0, 100.0, 40.0))
             .collect();
         for (index, path) in paths.iter().enumerate() {
             assert!(!paths[index + 1..].contains(path));
         }
         assert_eq!(oscillator_from_index(-1), Waveform::Sine);
         assert_eq!(oscillator_from_index(99), Waveform::Sawtooth);
+    }
+
+    #[test]
+    fn cycle_path_starts_at_the_start_phase() {
+        let points = points(&waveform_cycle_path(Waveform::Sine, 0.25, 200.0, 50.0));
+        // A sine started at 90 degrees begins at its peak and ends there.
+        assert!(points[0].1.abs() < 0.01);
+        assert!(points[CYCLE_PATH_SEGMENTS / 2].1 - 50.0 < 0.01);
+        assert!(points[CYCLE_PATH_SEGMENTS].1.abs() < 0.01);
     }
 }

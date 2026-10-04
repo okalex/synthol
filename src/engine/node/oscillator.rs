@@ -16,6 +16,8 @@ pub struct Oscillator {
     sample_rate: f32,
     /// Normalized phase in `0.0..1.0`.
     phase: f32,
+    /// Normalized phase each note starts from, in `0.0..1.0`.
+    start_phase: f32,
     frequency: f32,
     amplitude: f32,
     waveform: Waveform,
@@ -27,6 +29,7 @@ impl Default for Oscillator {
         Self {
             sample_rate: 44_100.0,
             phase: 0.0,
+            start_phase: 0.0,
             frequency: 0.0,
             amplitude: 0.0,
             waveform: Waveform::default(),
@@ -48,13 +51,19 @@ impl Oscillator {
         self.waveform = waveform;
     }
 
+    /// Set the normalized phase (`0.0..1.0`, i.e. 0 to 360 degrees) that new
+    /// notes start from. Sounding notes keep their current phase.
+    pub fn set_start_phase(&mut self, phase: f32) {
+        self.start_phase = wrap_phase(phase);
+    }
+
     pub fn handle_event(&mut self, event: MidiEvent) {
         match event {
             MidiEvent::NoteOn { note, velocity } if velocity > 0 => {
                 self.active_note = Some(note);
                 self.frequency = midi_note_frequency(note);
                 self.amplitude = f32::from(velocity) / 127.0;
-                self.phase = 0.0;
+                self.phase = self.start_phase;
             }
             MidiEvent::NoteOn { note, .. } | MidiEvent::NoteOff { note } => {
                 if self.active_note == Some(note) {
@@ -89,23 +98,35 @@ impl Oscillator {
     }
 }
 
-/// Fills `samples` with one cycle of `waveform`, from 0 to 360 degrees
-/// inclusive, using the same band-limited shape the oscillator plays as if it
+/// Fills `samples` with one cycle of `waveform` as a note starting at
+/// normalized `start_phase` plays it: 0 to 360 degrees inclusive, relative to
+/// the start. Uses the same band-limited shape the oscillator plays as if it
 /// produced `samples.len() - 1` samples per cycle. Intended for displays, so
 /// shapes are computed rather than drawn by hand.
-pub fn render_cycle(waveform: Waveform, samples: &mut [f32]) {
+pub fn render_cycle(waveform: Waveform, start_phase: f32, samples: &mut [f32]) {
     let Some(segments) = samples.len().checked_sub(1).filter(|&n| n > 0) else {
         samples.fill(0.0);
         return;
     };
+    let start_phase = wrap_phase(start_phase);
     let increment = 1.0 / segments as f32;
     for (index, sample) in samples.iter_mut().enumerate() {
-        *sample = waveform_sample(waveform, index as f32 * increment, increment);
+        let phase = (start_phase + index as f32 * increment).fract();
+        *sample = waveform_sample(waveform, phase, increment);
     }
 }
 
-/// One sample of `waveform` at normalized `phase`. Every shape starts at zero
-/// and rises, so retriggered notes begin without a jump.
+fn wrap_phase(phase: f32) -> f32 {
+    if phase.is_finite() {
+        phase.rem_euclid(1.0) % 1.0
+    } else {
+        0.0
+    }
+}
+
+/// One sample of `waveform` at normalized `phase`. Every shape is zero and
+/// rising at phase 0, so notes with the default start phase begin without a
+/// jump.
 fn waveform_sample(waveform: Waveform, phase: f32, increment: f32) -> f32 {
     match waveform {
         Waveform::Sine => (TAU * phase).sin(),
@@ -159,7 +180,7 @@ mod tests {
     fn rendered_cycle_spans_zero_to_360_degrees() {
         for waveform in WAVEFORMS {
             let mut samples = [0.0; 257];
-            render_cycle(waveform, &mut samples);
+            render_cycle(waveform, 0.0, &mut samples);
             assert!(
                 samples[0].abs() < 1e-5,
                 "{waveform:?} starts at {}",
@@ -181,7 +202,7 @@ mod tests {
     fn rendered_cycle_matches_the_oscillator() {
         // 128 samples per cycle keeps phase accumulation exact.
         let mut samples = [0.0; 129];
-        render_cycle(Waveform::Sawtooth, &mut samples);
+        render_cycle(Waveform::Sawtooth, 0.0, &mut samples);
 
         let mut oscillator = Oscillator::default();
         oscillator.reset(128.0);
@@ -201,7 +222,7 @@ mod tests {
     fn rendered_cycle_differs_per_waveform() {
         let render = |waveform| {
             let mut samples = [0.0; 65];
-            render_cycle(waveform, &mut samples);
+            render_cycle(waveform, 0.0, &mut samples);
             samples
         };
         for (index, a) in WAVEFORMS.iter().enumerate() {
@@ -212,11 +233,61 @@ mod tests {
     }
 
     #[test]
+    fn start_phase_sets_where_notes_begin() {
+        let mut oscillator = Oscillator::default();
+        oscillator.reset(48_000.0);
+        oscillator.set_start_phase(0.25);
+        oscillator.handle_event(MidiEvent::NoteOn {
+            note: 69,
+            velocity: 127,
+        });
+        assert!((oscillator.next_sample() - 1.0).abs() < 1e-5);
+
+        oscillator.set_start_phase(0.75);
+        oscillator.handle_event(MidiEvent::NoteOn {
+            note: 69,
+            velocity: 127,
+        });
+        assert!((oscillator.next_sample() + 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn start_phase_wraps_into_one_cycle() {
+        let mut oscillator = Oscillator::default();
+        for (input, expected) in [(1.0, 0.0), (1.25, 0.25), (-0.25, 0.75), (f32::NAN, 0.0)] {
+            oscillator.set_start_phase(input);
+            assert!((oscillator.start_phase - expected).abs() < 1e-6, "{input}");
+        }
+    }
+
+    #[test]
+    fn rendered_cycle_starts_at_the_start_phase() {
+        // 128 samples per cycle keeps phase accumulation exact.
+        let mut samples = [0.0; 129];
+        render_cycle(Waveform::Square, 0.375, &mut samples);
+
+        let mut oscillator = Oscillator::default();
+        oscillator.reset(128.0);
+        oscillator.set_waveform(Waveform::Square);
+        oscillator.set_start_phase(0.375);
+        oscillator.handle_event(MidiEvent::NoteOn {
+            note: 69,
+            velocity: 127,
+        });
+        oscillator.frequency = 1.0;
+        for (index, expected) in samples[..128].iter().enumerate() {
+            let actual = oscillator.next_sample();
+            assert!((actual - expected).abs() < 1e-5, "sample {index}");
+        }
+        assert!((samples[0] - samples[128]).abs() < 1e-5);
+    }
+
+    #[test]
     fn rendered_cycle_handles_tiny_buffers() {
         let mut empty: [f32; 0] = [];
-        render_cycle(Waveform::Sine, &mut empty);
+        render_cycle(Waveform::Sine, 0.0, &mut empty);
         let mut single = [1.0];
-        render_cycle(Waveform::Square, &mut single);
+        render_cycle(Waveform::Square, 0.0, &mut single);
         assert_eq!(single, [0.0]);
     }
 

@@ -15,9 +15,13 @@ An **Oscillator** dropdown (also a host-automatable parameter) selects the
 waveform: sine, square, triangle, or sawtooth. The square and sawtooth waves
 are band-limited with PolyBLEP; the triangle is generated directly and has
 some mild aliasing at high pitches. Square is full-scale, so it sounds louder
-than the other shapes. Next to the dropdown, a waveform display plots one
-cycle (0° to 360°) of the selected shape, computed from the oscillator's own
-sample function rather than drawn by hand.
+than the other shapes. A **Phase** knob (0° to 360°, also host-automatable)
+sets where in the cycle each new note starts; sounding notes are unaffected.
+Phases other than 0° start mid-cycle, so short attacks may click. Next to the
+dropdown, a waveform display plots one cycle (0° to 360°) of the selected
+shape as it plays from the chosen start phase, updating live while the knob
+turns. It is computed from the oscillator's own sample function rather than
+drawn by hand.
 
 The synth has no modulation, filters, or effects yet. The Slint editor
 currently provides a reusable ADSR graph/knob panel for the output envelope,

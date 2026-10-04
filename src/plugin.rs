@@ -63,6 +63,8 @@ pub struct SynthParams {
     pub voices: IntParam,
     #[param(name = "Oscillator", default = 0)]
     pub oscillator: EnumParam<OscillatorType>,
+    #[param(name = "Phase", range = "linear(0, 360)", default = 0.0, unit = "°")]
+    pub phase: FloatParam,
 }
 
 pub struct Synth;
@@ -100,6 +102,7 @@ impl PluginLogic for Synth {
 
         state.engine.set_voice_limit(params.voices.value_usize());
         state.engine.set_waveform(params.oscillator.value().into());
+        state.engine.set_start_phase(params.phase.read() / 360.0);
 
         let mut next_event = 0;
         let output_channels = buffer.num_output_channels();
