@@ -11,9 +11,11 @@ voices are busy, a new note steals the oldest releasing voice, or else the
 oldest held one. Voices are summed without normalization, so large chords can
 exceed 0 dBFS; lower the output gain if needed.
 
-The **Oscillators** section starts with one oscillator. **+ Add** adds
-another (up to four) and each row's × button removes that oscillator (the last
-one can't be removed); later oscillators move up to fill the gap. The number
+The **Oscillators** section starts with one oscillator and shows them in a
+tabbed panel, one tab per oscillator. **+ Add** next to the heading adds
+another (up to four) and opens its tab; each tab's × button removes that
+oscillator (the last one can't be removed), and later oscillators move up to
+fill the gap. The number
 of oscillators is the host-automatable **Oscillators** parameter, and each
 oscillator has its own host-automatable type, phase, pitch, and level
 parameters ("Osc 1 Type" through "Osc 4 Level"). Every voice plays all active
@@ -21,7 +23,7 @@ oscillators on its note and sums them, unnormalized, before the filter, so
 several oscillators at full level can exceed 0 dBFS; lower their levels if
 needed.
 
-Each oscillator row has a type dropdown that selects the
+Each oscillator's tab has a type dropdown that selects the
 waveform: sine, square, triangle, or sawtooth. The square and sawtooth waves
 are band-limited with PolyBLEP; the triangle is generated directly and has
 some mild aliasing at high pitches. Square is full-scale, so it sounds louder
@@ -63,7 +65,8 @@ Sync LFO only advances while the host is processing the plugin.
 
 The LFO can modulate any oscillator's **Pitch** and **Level** and filter
 **Cutoff** and **Q**. Drag the amber **MOD** handle from the LFO Routing row onto one of
-those knobs (they light up while you drag) to route the LFO to it. A routed
+those knobs (they light up while you drag) to route the LFO to it; to target
+another oscillator, select its tab first. A routed
 knob shows an amber arc: the faint arc covers the full swing around the knob's
 value, the bright arc shows the direction and depth of a positive LFO peak,
 and while a note plays a dot shows the current modulated value. Alt-drag a

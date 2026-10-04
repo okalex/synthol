@@ -1,4 +1,4 @@
-import { FilterResponseDisplay, AdsrEnvelopePanel, Dropdown, KnobModulation, ModDragHandle, ModRouteRow, ModRouteSlot, PositionMarker, SynthKnob, TextButton, WaveformDisplay } from "controls.slint";
+import { FilterResponseDisplay, AdsrEnvelopePanel, Dropdown, KnobModulation, ModDragHandle, ModRouteRow, ModRouteSlot, PositionMarker, SynthKnob, TabButton, TextButton, WaveformDisplay } from "controls.slint";
 
 export { KnobModulation, ModRouteSlot, PositionMarker }
 
@@ -117,6 +117,11 @@ export component SynthUi inherits Window {
     // The active oscillators; see `oscillator_row` in editor.rs.
     in-out property <[OscillatorRow]> oscillators: [{ waveform: 0, phase: 0.0, phase-text: "0.0 °", pitch: 0.5, pitch-text: "+0.00 st", level: 1.0, level-text: "100 %" }];
     in property <int> max-oscillators: 4;
+    // The oscillator tab the user picked; `current-oscillator` keeps it in
+    // range while the oscillator list changes.
+    in-out property <int> selected-oscillator: 0;
+    out property <int> current-oscillator: max(0, min(root.selected-oscillator, root.oscillators.length - 1));
+    property <OscillatorRow> current-osc: root.oscillators[root.current-oscillator];
     callback gain-pressed();
     callback gain-changed(float);
     callback gain-released();
@@ -195,7 +200,7 @@ export component SynthUi inherits Window {
             }
         }
 
-        // Scrolls with the wheel when added oscillators overflow the window.
+        // Scrolls with the wheel if the content outgrows the window.
         // Not draggable, so knob and envelope drags never scroll it.
         body := Flickable {
             interactive: false;
@@ -206,7 +211,7 @@ export component SynthUi inherits Window {
             width: body.width;
             height: self.preferred-height;
             padding: 18px;
-            spacing: 12px;
+            spacing: 10px;
 
             HorizontalLayout {
                 spacing: 20px;
@@ -249,7 +254,7 @@ export component SynthUi inherits Window {
             }
 
             VerticalLayout {
-                spacing: 6px;
+                spacing: 4px;
 
                 HorizontalLayout {
                     spacing: 12px;
@@ -265,105 +270,116 @@ export component SynthUi inherits Window {
 
                     if root.oscillators.length < root.max-oscillators: TextButton {
                         text: "+ ADD";
-                        clicked => { root.oscillator-add(); }
+                        clicked => {
+                            root.selected-oscillator = root.oscillators.length;
+                            root.oscillator-add();
+                        }
                     }
                 }
 
-                for osc[index] in root.oscillators: HorizontalLayout {
-                    spacing: 12px;
-                    alignment: start;
+                VerticalLayout {
+                    spacing: 0px;
 
-                    Text {
-                        width: 40px;
-                        text: "OSC " + (index + 1);
-                        font-size: 10px;
-                        font-weight: 700;
-                        color: #9299a8;
-                        vertical-alignment: center;
-                    }
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        spacing: 2px;
+                        alignment: start;
 
-                    VerticalLayout {
-                        alignment: center;
-
-                        Dropdown {
-                            options: ["Sine", "Square", "Triangle", "Sawtooth"];
-                            selected-index: osc.waveform;
-                            selected(waveform) => { root.oscillator-selected(index, waveform); }
-                        }
-                    }
-
-                    VerticalLayout {
-                        alignment: center;
-
-                        WaveformDisplay {
-                            width: 180px;
-                            waveform: osc.waveform;
-                            phase: osc.phase;
-                            cycle-path(waveform, phase, width, height) => {
-                                return root.oscillator-cycle-path(waveform, phase, width, height);
+                        for osc[index] in root.oscillators: TabButton {
+                            text: "OSC " + (index + 1);
+                            selected: index == root.current-oscillator;
+                            closable: root.oscillators.length > 1;
+                            clicked => { root.selected-oscillator = index; }
+                            close => {
+                                if root.selected-oscillator > index {
+                                    root.selected-oscillator -= 1;
+                                }
+                                root.oscillator-remove(index);
                             }
                         }
                     }
 
-                    SynthKnob {
-                        value: osc.phase;
-                        label: "PHASE";
-                        parameter-id: 2;
-                        value-text: osc.phase-text;
-                        changed(id, value) => { root.osc-changed(index, id, value); }
-                        released(id) => { root.osc-released(index, id); }
-                    }
+                    Rectangle {
+                        background: #20232b;
+                        border-radius: 8px;
 
-                    SynthKnob {
-                        value: osc.pitch;
-                        label: "PITCH";
-                        parameter-id: 0;
-                        value-text: osc.pitch-text;
-                        mod-target: 2 * index;
-                        modulation: root.knob-mods[2 * index];
-                        mod-drag-active: mod-handle.dragging;
-                        mod-drag-x: mod-handle.pointer-x;
-                        mod-drag-y: mod-handle.pointer-y;
-                        mod-drop-count: mod-handle.drop-count;
-                        mod-dropped(target) => { root.mod-assign(target); }
-                        changed(id, value) => { root.osc-changed(index, id, value); }
-                        released(id) => { root.osc-released(index, id); }
-                        mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
-                        mod-depth-released(target) => { root.mod-depth-released(target); }
-                    }
+                        HorizontalLayout {
+                            padding: 6px;
+                            padding-left: 14px;
+                            spacing: 12px;
+                            alignment: start;
 
-                    SynthKnob {
-                        value: osc.level;
-                        label: "LEVEL";
-                        parameter-id: 1;
-                        value-text: osc.level-text;
-                        mod-target: 2 * index + 1;
-                        modulation: root.knob-mods[2 * index + 1];
-                        mod-drag-active: mod-handle.dragging;
-                        mod-drag-x: mod-handle.pointer-x;
-                        mod-drag-y: mod-handle.pointer-y;
-                        mod-drop-count: mod-handle.drop-count;
-                        mod-dropped(target) => { root.mod-assign(target); }
-                        changed(id, value) => { root.osc-changed(index, id, value); }
-                        released(id) => { root.osc-released(index, id); }
-                        mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
-                        mod-depth-released(target) => { root.mod-depth-released(target); }
-                    }
+                            VerticalLayout {
+                                alignment: center;
 
-                    VerticalLayout {
-                        alignment: center;
+                                Dropdown {
+                                    options: ["Sine", "Square", "Triangle", "Sawtooth"];
+                                    selected-index: root.current-osc.waveform;
+                                    selected(waveform) => { root.oscillator-selected(root.current-oscillator, waveform); }
+                                }
+                            }
 
-                        // Keeps the rows aligned when the only oscillator
-                        // can't be removed.
-                        Rectangle {
-                            width: 24px;
-                            height: 22px;
+                            VerticalLayout {
+                                alignment: center;
 
-                            if root.oscillators.length > 1: TextButton {
-                                width: parent.width;
-                                text: "×";
-                                font-size: 13px;
-                                clicked => { root.oscillator-remove(index); }
+                                WaveformDisplay {
+                                    width: 180px;
+                                    waveform: root.current-osc.waveform;
+                                    phase: root.current-osc.phase;
+                                    cycle-path(waveform, phase, width, height) => {
+                                        return root.oscillator-cycle-path(waveform, phase, width, height);
+                                    }
+                                }
+                            }
+
+                            SynthKnob {
+                                value: root.current-osc.phase;
+                                label: "PHASE";
+                                // The value text ends well above the knob's
+                                // full height; trim it inside the panel.
+                                height: 88px;
+                                parameter-id: 2;
+                                value-text: root.current-osc.phase-text;
+                                changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
+                                released(id) => { root.osc-released(root.current-oscillator, id); }
+                            }
+
+                            SynthKnob {
+                                value: root.current-osc.pitch;
+                                label: "PITCH";
+                                height: 88px;
+                                parameter-id: 0;
+                                value-text: root.current-osc.pitch-text;
+                                mod-target: 2 * root.current-oscillator;
+                                modulation: root.knob-mods[2 * root.current-oscillator];
+                                mod-drag-active: mod-handle.dragging;
+                                mod-drag-x: mod-handle.pointer-x;
+                                mod-drag-y: mod-handle.pointer-y;
+                                mod-drop-count: mod-handle.drop-count;
+                                mod-dropped(target) => { root.mod-assign(target); }
+                                changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
+                                released(id) => { root.osc-released(root.current-oscillator, id); }
+                                mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                                mod-depth-released(target) => { root.mod-depth-released(target); }
+                            }
+
+                            SynthKnob {
+                                value: root.current-osc.level;
+                                label: "LEVEL";
+                                height: 88px;
+                                parameter-id: 1;
+                                value-text: root.current-osc.level-text;
+                                mod-target: 2 * root.current-oscillator + 1;
+                                modulation: root.knob-mods[2 * root.current-oscillator + 1];
+                                mod-drag-active: mod-handle.dragging;
+                                mod-drag-x: mod-handle.pointer-x;
+                                mod-drag-y: mod-handle.pointer-y;
+                                mod-drop-count: mod-handle.drop-count;
+                                mod-dropped(target) => { root.mod-assign(target); }
+                                changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
+                                released(id) => { root.osc-released(root.current-oscillator, id); }
+                                mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                                mod-depth-released(target) => { root.mod-depth-released(target); }
                             }
                         }
                     }
