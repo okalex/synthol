@@ -1,4 +1,4 @@
-import { AdsrEnvelopePanel, Dropdown } from "controls.slint";
+import { AdsrEnvelopePanel, Dropdown, WaveformDisplay } from "controls.slint";
 
 import "JetBrainsMono-Regular.ttf";
 
@@ -111,10 +111,11 @@ export component SynthUi inherits Window {
     callback envelope-released(int);
     callback voices-selected(int);
     callback oscillator-selected(int);
+    pure callback oscillator-cycle-path(int, float, float) -> string;
 
     title: "Synthol";
     preferred-width: 720px;
-    preferred-height: 540px;
+    preferred-height: 600px;
     background: #17191f;
     default-font-family: "JetBrains Mono";
 
@@ -173,10 +174,21 @@ export component SynthUi inherits Window {
                     vertical-alignment: center;
                 }
 
-                Dropdown {
-                    options: ["Sine", "Square", "Triangle", "Sawtooth"];
-                    selected-index: root.oscillator;
-                    selected(index) => { root.oscillator-selected(index); }
+                VerticalLayout {
+                    alignment: center;
+
+                    Dropdown {
+                        options: ["Sine", "Square", "Triangle", "Sawtooth"];
+                        selected-index: root.oscillator;
+                        selected(index) => { root.oscillator-selected(index); }
+                    }
+                }
+
+                WaveformDisplay {
+                    waveform: root.oscillator;
+                    cycle-path(waveform, width, height) => {
+                        return root.oscillator-cycle-path(waveform, width, height);
+                    }
                 }
 
                 Rectangle { width: 16px; }
@@ -189,11 +201,15 @@ export component SynthUi inherits Window {
                     vertical-alignment: center;
                 }
 
-                Dropdown {
-                    width: 72px;
-                    options: ["Mono", "2", "3", "4", "5", "6", "7", "8"];
-                    selected-index: root.voices - 1;
-                    selected(index) => { root.voices-selected(index + 1); }
+                VerticalLayout {
+                    alignment: center;
+
+                    Dropdown {
+                        width: 72px;
+                        options: ["Mono", "2", "3", "4", "5", "6", "7", "8"];
+                        selected-index: root.voices - 1;
+                        selected(index) => { root.voices-selected(index + 1); }
+                    }
                 }
             }
 

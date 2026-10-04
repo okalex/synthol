@@ -1,11 +1,13 @@
 use std::cell::RefCell;
+use std::fmt::Write;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use truce::prelude::*;
 use truce_slint::{PluginContext, SlintEditor, SyncFn};
 
-use crate::engine::MAX_VOICES;
+use crate::engine::node::oscillator::render_cycle;
+use crate::engine::{MAX_VOICES, Waveform};
 use crate::plugin::{OscillatorType, SynthParams, SynthParamsParamId};
 
 slint::include_modules!();
@@ -13,7 +15,7 @@ slint::include_modules!();
 pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
     SlintEditor::new(
         params.clone(),
-        (720, 540),
+        (720, 600),
         |state: PluginContext<SynthParams>| -> SyncFn<SynthParams> {
             let ui = SynthUi::new().expect("failed to create Slint editor");
             let pending_edits = Rc::new(RefCell::new(Vec::<(SynthParamsParamId, f64)>::new()));
@@ -79,6 +81,11 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
                 enqueue_edit(&pending_edits_for_ui, (id, normalized));
             });
 
+            ui.on_oscillator_cycle_path(|index, width, height| {
+                let waveform = oscillator_from_index(index);
+                slint::SharedString::from(waveform_cycle_path(waveform, width, height))
+            });
+
             Box::new(move |state: &PluginContext<SynthParams>| {
                 for (id, value) in pending_edits.borrow_mut().drain(..) {
                     state.automate(id, value);
@@ -136,6 +143,30 @@ fn oscillator_to_normalized(index: i32) -> f64 {
     (f64::from(index) / last).clamp(0.0, 1.0)
 }
 
+fn oscillator_from_index(index: i32) -> Waveform {
+    let last = OscillatorType::variant_count() - 1;
+    OscillatorType::from_index(usize::try_from(index).unwrap_or(0).min(last)).into()
+}
+
+/// Segments per drawn cycle; enough that band-limited edges look vertical.
+const CYCLE_PATH_SEGMENTS: usize = 256;
+
+/// SVG path commands tracing one cycle of `waveform` across a `width` by
+/// `height` box: 0 degrees on the left, 360 on the right, +1 at the top.
+fn waveform_cycle_path(waveform: Waveform, width: f32, height: f32) -> String {
+    let mut samples = [0.0; CYCLE_PATH_SEGMENTS + 1];
+    render_cycle(waveform, &mut samples);
+
+    let mut commands = String::with_capacity(samples.len() * 16);
+    for (index, sample) in samples.iter().enumerate() {
+        let x = width * index as f32 / CYCLE_PATH_SEGMENTS as f32;
+        let y = height * (1.0 - sample.clamp(-1.0, 1.0)) / 2.0;
+        let command = if index == 0 { 'M' } else { 'L' };
+        let _ = write!(commands, "{command}{x:.2} {y:.2} ");
+    }
+    commands
+}
+
 fn envelope_parameter(id: i32) -> Option<SynthParamsParamId> {
     match id {
         0 => Some(SynthParamsParamId::Attack),
@@ -143,5 +174,50 @@ fn envelope_parameter(id: i32) -> Option<SynthParamsParamId> {
         2 => Some(SynthParamsParamId::Sustain),
         3 => Some(SynthParamsParamId::Release),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn points(commands: &str) -> Vec<(f32, f32)> {
+        commands
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .chunks(2)
+            .map(|pair| {
+                let x = pair[0][1..].parse().unwrap();
+                let y = pair[1].parse().unwrap();
+                (x, y)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cycle_path_spans_the_box_from_0_to_360_degrees() {
+        let commands = waveform_cycle_path(Waveform::Sine, 200.0, 50.0);
+        assert!(commands.starts_with('M'));
+        let points = points(&commands);
+        assert_eq!(points.len(), CYCLE_PATH_SEGMENTS + 1);
+        assert_eq!(points[0], (0.0, 25.0));
+        let quarter = points[CYCLE_PATH_SEGMENTS / 4];
+        assert!((quarter.0 - 50.0).abs() < 0.01 && quarter.1.abs() < 0.01);
+        let three_quarters = points[CYCLE_PATH_SEGMENTS * 3 / 4];
+        assert!((three_quarters.1 - 50.0).abs() < 0.01);
+        let last = points[CYCLE_PATH_SEGMENTS];
+        assert!((last.0 - 200.0).abs() < 0.01 && (last.1 - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn cycle_path_follows_the_selected_oscillator() {
+        let paths: Vec<_> = (0..OscillatorType::variant_count() as i32)
+            .map(|index| waveform_cycle_path(oscillator_from_index(index), 100.0, 40.0))
+            .collect();
+        for (index, path) in paths.iter().enumerate() {
+            assert!(!paths[index + 1..].contains(path));
+        }
+        assert_eq!(oscillator_from_index(-1), Waveform::Sine);
+        assert_eq!(oscillator_from_index(99), Waveform::Sawtooth);
     }
 }

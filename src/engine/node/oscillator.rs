@@ -89,6 +89,21 @@ impl Oscillator {
     }
 }
 
+/// Fills `samples` with one cycle of `waveform`, from 0 to 360 degrees
+/// inclusive, using the same band-limited shape the oscillator plays as if it
+/// produced `samples.len() - 1` samples per cycle. Intended for displays, so
+/// shapes are computed rather than drawn by hand.
+pub fn render_cycle(waveform: Waveform, samples: &mut [f32]) {
+    let Some(segments) = samples.len().checked_sub(1).filter(|&n| n > 0) else {
+        samples.fill(0.0);
+        return;
+    };
+    let increment = 1.0 / segments as f32;
+    for (index, sample) in samples.iter_mut().enumerate() {
+        *sample = waveform_sample(waveform, index as f32 * increment, increment);
+    }
+}
+
 /// One sample of `waveform` at normalized `phase`. Every shape starts at zero
 /// and rises, so retriggered notes begin without a jump.
 fn waveform_sample(waveform: Waveform, phase: f32, increment: f32) -> f32 {
@@ -130,8 +145,80 @@ pub fn midi_note_frequency(note: u8) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Oscillator, Waveform, midi_note_frequency, waveform_sample};
+    use super::{Oscillator, Waveform, midi_note_frequency, render_cycle, waveform_sample};
     use crate::engine::MidiEvent;
+
+    const WAVEFORMS: [Waveform; 4] = [
+        Waveform::Sine,
+        Waveform::Square,
+        Waveform::Triangle,
+        Waveform::Sawtooth,
+    ];
+
+    #[test]
+    fn rendered_cycle_spans_zero_to_360_degrees() {
+        for waveform in WAVEFORMS {
+            let mut samples = [0.0; 257];
+            render_cycle(waveform, &mut samples);
+            assert!(
+                samples[0].abs() < 1e-5,
+                "{waveform:?} starts at {}",
+                samples[0]
+            );
+            assert!(
+                samples[256].abs() < 1e-5,
+                "{waveform:?} ends at {}",
+                samples[256]
+            );
+            assert!(
+                samples.iter().all(|s| s.abs() <= 1.0 + 1e-5),
+                "{waveform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rendered_cycle_matches_the_oscillator() {
+        // 128 samples per cycle keeps phase accumulation exact.
+        let mut samples = [0.0; 129];
+        render_cycle(Waveform::Sawtooth, &mut samples);
+
+        let mut oscillator = Oscillator::default();
+        oscillator.reset(128.0);
+        oscillator.set_waveform(Waveform::Sawtooth);
+        oscillator.handle_event(MidiEvent::NoteOn {
+            note: 69,
+            velocity: 127,
+        });
+        oscillator.frequency = 1.0;
+        for (index, expected) in samples[..128].iter().enumerate() {
+            let actual = oscillator.next_sample();
+            assert!((actual - expected).abs() < 1e-5, "sample {index}");
+        }
+    }
+
+    #[test]
+    fn rendered_cycle_differs_per_waveform() {
+        let render = |waveform| {
+            let mut samples = [0.0; 65];
+            render_cycle(waveform, &mut samples);
+            samples
+        };
+        for (index, a) in WAVEFORMS.iter().enumerate() {
+            for b in &WAVEFORMS[index + 1..] {
+                assert_ne!(render(*a), render(*b), "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rendered_cycle_handles_tiny_buffers() {
+        let mut empty: [f32; 0] = [];
+        render_cycle(Waveform::Sine, &mut empty);
+        let mut single = [1.0];
+        render_cycle(Waveform::Square, &mut single);
+        assert_eq!(single, [0.0]);
+    }
 
     #[test]
     fn midi_a4_is_440_hz() {
