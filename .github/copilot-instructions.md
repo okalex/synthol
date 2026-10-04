@@ -3,11 +3,10 @@
 ## Goals
 
 Synthol is currently a small Truce instrument: MIDI drives up to eight
-oscillator voices (sine, square, triangle, or sawtooth), and a Slint editor
-controls output gain, the oscillator waveform, the output envelope, and the
-polyphony limit. The intended product is a modular synthesizer where users
-can add and connect oscillators, envelopes, LFOs, filters, effects, and other
-modules.
+sine-oscillator voices, and a Slint editor controls output gain, the output
+envelope, and the polyphony limit. The intended product is a modular
+synthesizer where users can add and connect oscillators, envelopes, LFOs,
+filters, effects, and other modules.
 
 The architecture should support that growth without making each module know
 about the plugin host, UI, or other modules. It should also keep the audio
@@ -17,8 +16,8 @@ belong off the real-time audio thread.
 ## Current implementation scope
 
 The code is being migrated incrementally. The current foundation separates
-the Truce adapter, Slint editor bridge, engine, MIDI event type,
-multi-waveform oscillator, and reusable ADSR envelope. Engine construction compiles a fixed
+the Truce adapter, Slint editor bridge, engine, MIDI event type, sine
+oscillator, and reusable ADSR envelope. Engine construction compiles a fixed
 typed oscillator-to-output-envelope-to-output graph once; processing follows
 its prepared order without compiling or allocating in the audio callback.
 Output gain is applied after the envelope. This fixed graph is an internal
@@ -188,12 +187,6 @@ already sounding the same note, else take a free voice, else steal the oldest
 releasing voice, else steal the oldest held voice. With one voice this
 reproduces the earlier monophonic last-note-wins behavior. Lowering the limit
 releases held voices above it and lets them finish their release.
-
-The oscillator (`engine/node/oscillator.rs`) keeps a normalized 0-1 phase and
-renders a `Waveform` (sine, PolyBLEP square, triangle, or PolyBLEP sawtooth).
-The host-visible `Oscillator` enum parameter is mapped to the engine `Waveform` once per block
-and applied to every voice; switching takes effect immediately, including on
-sounding notes, without resetting phase.
 
 ## Parameters and host integration
 

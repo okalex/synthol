@@ -1,4 +1,4 @@
-import { AdsrEnvelopePanel, VoiceCountDropdown } from "controls.slint";
+import { AdsrEnvelopePanel, Dropdown } from "controls.slint";
 
 import "JetBrainsMono-Regular.ttf";
 
@@ -101,6 +101,7 @@ export component SynthUi inherits Window {
     in-out property <string> sustain-text: "-6.0 dB";
     in-out property <string> release-text: "1000.0 ms";
     in-out property <int> voices: 8;
+    in-out property <int> oscillator: 0;
     callback gain-pressed();
     callback gain-changed(float);
     callback gain-released();
@@ -109,6 +110,7 @@ export component SynthUi inherits Window {
     callback envelope-sustain-level-changed(float);
     callback envelope-released(int);
     callback voices-selected(int);
+    callback oscillator-selected(int);
 
     title: "Synthol";
     preferred-width: 720px;
@@ -150,13 +152,34 @@ export component SynthUi inherits Window {
                 }
 
                 OutputGainSlider {
-                    width: 380px;
+                    width: 420px;
                     value <=> root.gain;
                     value-text: root.gain-text;
                     pressed => { root.gain-pressed(); }
                     changed(value) => { root.gain-changed(value); }
                     released => { root.gain-released(); }
                 }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+
+                Text {
+                    text: "OSCILLATOR";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: #9299a8;
+                    vertical-alignment: center;
+                }
+
+                Dropdown {
+                    options: ["Sine", "Square", "Triangle", "Sawtooth"];
+                    selected-index: root.oscillator;
+                    selected(index) => { root.oscillator-selected(index); }
+                }
+
+                Rectangle { width: 16px; }
 
                 Text {
                     text: "VOICES";
@@ -166,19 +189,17 @@ export component SynthUi inherits Window {
                     vertical-alignment: center;
                 }
 
-                VerticalLayout {
-                    alignment: center;
-
-                    VoiceCountDropdown {
-                        value: root.voices;
-                        selected(count) => { root.voices-selected(count); }
-                    }
+                Dropdown {
+                    width: 72px;
+                    options: ["Mono", "2", "3", "4", "5", "6", "7", "8"];
+                    selected-index: root.voices - 1;
+                    selected(index) => { root.voices-selected(index + 1); }
                 }
             }
 
             AdsrEnvelopePanel {
                 width: 100%;
-                height: 380px;
+                height: 360px;
                 attack <=> root.attack;
                 decay <=> root.decay;
                 sustain <=> root.sustain;

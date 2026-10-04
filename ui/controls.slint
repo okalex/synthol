@@ -436,14 +436,14 @@ export component AdsrEnvelopePanel inherits Rectangle {
     }
 }
 
-// Drag-free select for the polyphony limit. Like the other controls it has no
-// FocusScope, so computer-MIDI keys keep reaching the host.
-export component VoiceCountDropdown inherits Rectangle {
-    in property <int> value: 8;
-    in property <int> max-voices: 8;
+// Drag-free select control. Like the other controls it has no FocusScope, so
+// computer-MIDI keys keep reaching the host.
+export component Dropdown inherits Rectangle {
+    in property <[string]> options;
+    in property <int> selected-index: 0;
     callback selected(int);
 
-    width: 72px;
+    width: 96px;
     height: 24px;
     border-radius: 4px;
     background: button-touch.has-hover ? #2f343e : #292d36;
@@ -452,7 +452,7 @@ export component VoiceCountDropdown inherits Rectangle {
 
     Text {
         x: 10px;
-        text: root.value == 1 ? "Mono" : root.value;
+        text: root.options[root.selected-index];
         font-size: 11px;
         color: #e8eaf0;
         vertical-alignment: center;
@@ -474,7 +474,7 @@ export component VoiceCountDropdown inherits Rectangle {
         x: 0px;
         y: root.height + 2px;
         width: root.width;
-        height: root.max-voices * 22px + 4px;
+        height: root.options.length * 22px + 4px;
 
         Rectangle {
             background: #20232b;
@@ -482,27 +482,26 @@ export component VoiceCountDropdown inherits Rectangle {
             border-width: 1px;
             border-color: #424754;
 
-            for index in root.max-voices: Rectangle {
-                property <int> count: index + 1;
+            for option[index] in root.options: Rectangle {
                 x: 2px;
                 y: 2px + index * 22px;
                 width: parent.width - 4px;
                 height: 22px;
                 border-radius: 3px;
-                background: count == root.value
+                background: index == root.selected-index
                     ? #4d99f2
                     : (item-touch.has-hover ? #343943 : transparent);
 
                 Text {
                     x: 8px;
-                    text: count == 1 ? "Mono" : count;
+                    text: option;
                     font-size: 11px;
-                    color: count == root.value ? #ffffff : #c6cad4;
+                    color: index == root.selected-index ? #ffffff : #c6cad4;
                     vertical-alignment: center;
                 }
 
                 item-touch := TouchArea {
-                    clicked => { root.selected(count); }
+                    clicked => { root.selected(index); }
                 }
             }
         }

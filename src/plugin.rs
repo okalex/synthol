@@ -5,7 +5,26 @@ use truce::prelude::*;
 
 use crate::editor;
 use crate::engine::node::envelope::AdsrSettings;
-use crate::engine::{MidiEvent, SynthEngine};
+use crate::engine::{MidiEvent, SynthEngine, Waveform};
+
+#[derive(ParamEnum)]
+pub enum OscillatorType {
+    Sine,
+    Square,
+    Triangle,
+    Sawtooth,
+}
+
+impl From<OscillatorType> for Waveform {
+    fn from(oscillator: OscillatorType) -> Self {
+        match oscillator {
+            OscillatorType::Sine => Self::Sine,
+            OscillatorType::Square => Self::Square,
+            OscillatorType::Triangle => Self::Triangle,
+            OscillatorType::Sawtooth => Self::Sawtooth,
+        }
+    }
+}
 
 #[derive(Params)]
 pub struct SynthParams {
@@ -42,6 +61,8 @@ pub struct SynthParams {
     pub release: FloatParam,
     #[param(name = "Voices", range = "discrete(1, 8)", default = 8)]
     pub voices: IntParam,
+    #[param(name = "Oscillator", default = 0)]
+    pub oscillator: EnumParam<OscillatorType>,
 }
 
 pub struct Synth;
@@ -78,6 +99,7 @@ impl PluginLogic for Synth {
         });
 
         state.engine.set_voice_limit(params.voices.value_usize());
+        state.engine.set_waveform(params.oscillator.value().into());
 
         let mut next_event = 0;
         let output_channels = buffer.num_output_channels();

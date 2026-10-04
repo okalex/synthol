@@ -6,7 +6,7 @@ use truce::prelude::*;
 use truce_slint::{PluginContext, SlintEditor, SyncFn};
 
 use crate::engine::MAX_VOICES;
-use crate::plugin::{SynthParams, SynthParamsParamId};
+use crate::plugin::{OscillatorType, SynthParams, SynthParamsParamId};
 
 slint::include_modules!();
 
@@ -70,6 +70,15 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
                 enqueue_edit(&pending_edits_for_ui, (id, normalized));
             });
 
+            let pending_edits_for_ui = pending_edits.clone();
+            let state_for_ui = state.clone();
+            ui.on_oscillator_selected(move |index| {
+                let id = SynthParamsParamId::Oscillator;
+                let normalized = oscillator_to_normalized(index);
+                state_for_ui.params().set_normalized(id.into(), normalized);
+                enqueue_edit(&pending_edits_for_ui, (id, normalized));
+            });
+
             Box::new(move |state: &PluginContext<SynthParams>| {
                 for (id, value) in pending_edits.borrow_mut().drain(..) {
                     state.automate(id, value);
@@ -98,6 +107,7 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
                     state.format_param(SynthParamsParamId::Release),
                 ));
                 ui.set_voices(state.params().voices.value_i32());
+                ui.set_oscillator(state.params().oscillator.index() as i32);
             })
         },
     )
@@ -119,6 +129,11 @@ fn enqueue_edit(
 fn voices_to_normalized(count: i32) -> f64 {
     let max = MAX_VOICES as f64;
     ((f64::from(count) - 1.0) / (max - 1.0)).clamp(0.0, 1.0)
+}
+
+fn oscillator_to_normalized(index: i32) -> f64 {
+    let last = (OscillatorType::variant_count() - 1) as f64;
+    (f64::from(index) / last).clamp(0.0, 1.0)
 }
 
 fn envelope_parameter(id: i32) -> Option<SynthParamsParamId> {

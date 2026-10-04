@@ -7,6 +7,7 @@ pub use midi::MidiEvent;
 
 use graph::{CompiledGraph, GraphDocument};
 use node::envelope::AdsrSettings;
+pub use node::oscillator::Waveform;
 use voice::Voice;
 
 /// Hard upper bound on simultaneous voices.
@@ -52,6 +53,12 @@ impl SynthEngine {
     pub fn set_output_envelope_settings(&mut self, settings: AdsrSettings) {
         for voice in &mut self.voices {
             voice.set_envelope_settings(settings);
+        }
+    }
+
+    pub fn set_waveform(&mut self, waveform: Waveform) {
+        for voice in &mut self.voices {
+            voice.set_waveform(waveform);
         }
     }
 

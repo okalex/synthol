@@ -1,6 +1,6 @@
 # Synthol VST
 
-A minimal polyphonic sine-wave instrument plugin built with Rust and
+A minimal polyphonic instrument plugin built with Rust and
 [Truce](https://github.com/truce-audio/truce). It accepts MIDI note-on and
 note-off events, uses MIDI note numbers for pitch, and scales amplitude by
 note-on velocity. A reusable ADSR envelope shapes the oscillator at the output
@@ -10,6 +10,12 @@ gain. Up to eight voices can sound at once; a **Voices** dropdown in the editor
 voices are busy, a new note steals the oldest releasing voice, or else the
 oldest held one. Voices are summed without normalization, so large chords can
 exceed 0 dBFS; lower the output gain if needed.
+
+An **Oscillator** dropdown (also a host-automatable parameter) selects the
+waveform: sine, square, triangle, or sawtooth. The square and sawtooth waves
+are band-limited with PolyBLEP; the triangle is generated directly and has
+some mild aliasing at high pitches. Square is full-scale, so it sounds louder
+than the other shapes.
 
 The synth has no modulation, filters, or effects yet. The Slint editor
 currently provides a reusable ADSR graph/knob panel for the output envelope,

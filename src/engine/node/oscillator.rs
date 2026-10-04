@@ -2,34 +2,50 @@ use std::f32::consts::TAU;
 
 use crate::engine::MidiEvent;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Waveform {
+    #[default]
+    Sine,
+    Square,
+    Triangle,
+    Sawtooth,
+}
+
 #[derive(Debug)]
-pub struct SineOscillator {
+pub struct Oscillator {
     sample_rate: f32,
+    /// Normalized phase in `0.0..1.0`.
     phase: f32,
     frequency: f32,
     amplitude: f32,
+    waveform: Waveform,
     active_note: Option<u8>,
 }
 
-impl Default for SineOscillator {
+impl Default for Oscillator {
     fn default() -> Self {
         Self {
             sample_rate: 44_100.0,
             phase: 0.0,
             frequency: 0.0,
             amplitude: 0.0,
+            waveform: Waveform::default(),
             active_note: None,
         }
     }
 }
 
-impl SineOscillator {
+impl Oscillator {
     pub fn reset(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.phase = 0.0;
         self.frequency = 0.0;
         self.amplitude = 0.0;
         self.active_note = None;
+    }
+
+    pub fn set_waveform(&mut self, waveform: Waveform) {
+        self.waveform = waveform;
     }
 
     pub fn handle_event(&mut self, event: MidiEvent) {
@@ -53,8 +69,9 @@ impl SineOscillator {
             return 0.0;
         }
 
-        let output = self.phase.sin() * self.amplitude;
-        self.phase = (self.phase + TAU * self.frequency / self.sample_rate) % TAU;
+        let increment = self.frequency / self.sample_rate;
+        let output = waveform_sample(self.waveform, self.phase, increment) * self.amplitude;
+        self.phase = (self.phase + increment).fract();
         output
     }
 
@@ -72,13 +89,49 @@ impl SineOscillator {
     }
 }
 
+/// One sample of `waveform` at normalized `phase`. Every shape starts at zero
+/// and rises, so retriggered notes begin without a jump.
+fn waveform_sample(waveform: Waveform, phase: f32, increment: f32) -> f32 {
+    match waveform {
+        Waveform::Sine => (TAU * phase).sin(),
+        Waveform::Square => {
+            let naive = if phase < 0.5 { 1.0 } else { -1.0 };
+            naive + poly_blep(phase, increment) - poly_blep((phase + 0.5).fract(), increment)
+        }
+        Waveform::Triangle => 4.0 * ((phase + 0.75).fract() - 0.5).abs() - 1.0,
+        Waveform::Sawtooth => {
+            // Rising ramp offset by half a cycle so it starts at zero; the
+            // falling edge sits at phase 0.5.
+            let shifted = (phase + 0.5).fract();
+            2.0 * shifted - 1.0 - poly_blep(shifted, increment)
+        }
+    }
+}
+
+/// Polynomial band-limited step correction around a rising discontinuity at
+/// phase 0, reducing the aliasing of hard edges.
+fn poly_blep(phase: f32, increment: f32) -> f32 {
+    if increment <= 0.0 {
+        0.0
+    } else if phase < increment {
+        let t = phase / increment;
+        t + t - t * t - 1.0
+    } else if phase > 1.0 - increment {
+        let t = (phase - 1.0) / increment;
+        t * t + t + t + 1.0
+    } else {
+        0.0
+    }
+}
+
 pub fn midi_note_frequency(note: u8) -> f32 {
     440.0 * 2.0_f32.powf((f32::from(note) - 69.0) / 12.0)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::midi_note_frequency;
+    use super::{Oscillator, Waveform, midi_note_frequency, waveform_sample};
+    use crate::engine::MidiEvent;
 
     #[test]
     fn midi_a4_is_440_hz() {
@@ -90,5 +143,100 @@ mod tests {
         let a4 = midi_note_frequency(69);
         let a5 = midi_note_frequency(81);
         assert!((a5 - 2.0 * a4).abs() < 0.001);
+    }
+
+    #[test]
+    fn waveforms_hit_expected_points() {
+        let cases = [
+            (Waveform::Sine, [0.0, 1.0, 0.0, -1.0]),
+            (Waveform::Square, [0.0, 1.0, 0.0, -1.0]),
+            (Waveform::Triangle, [0.0, 1.0, 0.0, -1.0]),
+            (Waveform::Sawtooth, [0.0, 0.5, 0.0, -0.5]),
+        ];
+        for (waveform, expected) in cases {
+            for (index, expected) in expected.into_iter().enumerate() {
+                let phase = index as f32 * 0.25;
+                let actual = waveform_sample(waveform, phase, 0.01);
+                // PolyBLEP smooths the square and sawtooth edges to zero.
+                assert!(
+                    (actual - expected).abs() < 1e-5,
+                    "{waveform:?} at phase {phase}: {actual} != {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn square_is_flat_between_edges() {
+        for phase in [0.1, 0.2, 0.3, 0.4] {
+            assert_eq!(waveform_sample(Waveform::Square, phase, 0.01), 1.0);
+            assert_eq!(waveform_sample(Waveform::Square, phase + 0.5, 0.01), -1.0);
+        }
+    }
+
+    #[test]
+    fn triangle_is_linear_between_peaks() {
+        let a = waveform_sample(Waveform::Triangle, 0.3, 0.01);
+        let b = waveform_sample(Waveform::Triangle, 0.4, 0.01);
+        let c = waveform_sample(Waveform::Triangle, 0.5, 0.01);
+        assert!(((a - b) - (b - c)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn sawtooth_ramps_up_between_edges() {
+        let a = waveform_sample(Waveform::Sawtooth, 0.6, 0.01);
+        let b = waveform_sample(Waveform::Sawtooth, 0.7, 0.01);
+        let c = waveform_sample(Waveform::Sawtooth, 0.8, 0.01);
+        assert!(a < b && b < c);
+        assert!(((b - a) - (c - b)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn every_waveform_stays_bounded_and_has_no_dc() {
+        for waveform in [
+            Waveform::Sine,
+            Waveform::Square,
+            Waveform::Triangle,
+            Waveform::Sawtooth,
+        ] {
+            let mut oscillator = Oscillator::default();
+            oscillator.reset(48_000.0);
+            oscillator.set_waveform(waveform);
+            // 480 Hz divides 48 kHz evenly, so 1000 samples are 10 whole cycles.
+            oscillator.handle_event(MidiEvent::NoteOn {
+                note: 71,
+                velocity: 127,
+            });
+            oscillator.frequency = 480.0;
+
+            let samples: Vec<f32> = (0..1_000).map(|_| oscillator.next_sample()).collect();
+            let peak = samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+            let mean = samples.iter().sum::<f32>() / samples.len() as f32;
+            assert!(peak <= 1.0 + 1e-5, "{waveform:?} peak {peak}");
+            assert!(peak > 0.9, "{waveform:?} peak {peak}");
+            assert!(mean.abs() < 1e-3, "{waveform:?} DC {mean}");
+        }
+    }
+
+    #[test]
+    fn waveform_changes_the_output() {
+        let render = |waveform| {
+            let mut oscillator = Oscillator::default();
+            oscillator.reset(44_100.0);
+            oscillator.set_waveform(waveform);
+            oscillator.handle_event(MidiEvent::NoteOn {
+                note: 69,
+                velocity: 127,
+            });
+            (0..64)
+                .map(|_| oscillator.next_sample())
+                .collect::<Vec<_>>()
+        };
+        assert_ne!(render(Waveform::Sine), render(Waveform::Square));
+        assert_ne!(render(Waveform::Sine), render(Waveform::Triangle));
+        assert_ne!(render(Waveform::Square), render(Waveform::Triangle));
+        assert_ne!(render(Waveform::Sawtooth), render(Waveform::Sine));
+        assert_ne!(render(Waveform::Sawtooth), render(Waveform::Square));
+        assert_ne!(render(Waveform::Sawtooth), render(Waveform::Triangle));
     }
 }

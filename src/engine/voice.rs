@@ -1,12 +1,12 @@
 use super::graph::CompiledGraph;
 use super::midi::MidiEvent;
 use super::node::envelope::{AdsrEnvelope, AdsrSettings};
-use super::node::oscillator::SineOscillator;
+use super::node::oscillator::{Oscillator, Waveform};
 
 /// Per-voice node state for the oscillator-to-envelope graph.
 #[derive(Debug, Default)]
 pub(super) struct Voice {
-    oscillator: SineOscillator,
+    oscillator: Oscillator,
     envelope: AdsrEnvelope,
     note: Option<u8>,
     /// Allocation order stamp; lower values are older and stolen first.
@@ -23,6 +23,10 @@ impl Voice {
 
     pub(super) fn set_envelope_settings(&mut self, settings: AdsrSettings) {
         self.envelope.set_settings(settings);
+    }
+
+    pub(super) fn set_waveform(&mut self, waveform: Waveform) {
+        self.oscillator.set_waveform(waveform);
     }
 
     pub(super) fn note_on(&mut self, note: u8, velocity: u8, started_at: u64) {

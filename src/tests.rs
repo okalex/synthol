@@ -223,3 +223,69 @@ fn voices_parameter_controls_polyphony() {
     assert!(mono_peak <= 1.0, "mono peak was {mono_peak}");
     assert!(poly_peak > 1.5, "poly peak was {poly_peak}");
 }
+
+#[test]
+fn oscillator_parameter_lists_each_waveform() {
+    use crate::plugin::{OscillatorType, SynthParams};
+    use truce::prelude::*;
+
+    let params = SynthParams::default();
+    assert_eq!(params.oscillator.index(), 0);
+    assert_eq!(
+        OscillatorType::variant_names(),
+        ["Sine", "Square", "Triangle", "Sawtooth"]
+    );
+
+    for index in 0..4 {
+        params.set_normalized(
+            crate::plugin::SynthParamsParamId::Oscillator.into(),
+            index as f64 / 3.0,
+        );
+        assert_eq!(params.oscillator.index(), index);
+    }
+}
+
+#[test]
+fn oscillator_parameter_changes_rendered_waveform() {
+    use std::time::Duration;
+    use truce_test::driver;
+
+    let render = |normalized_waveform| {
+        driver!(Plugin)
+            .duration(Duration::from_millis(100))
+            .set_param(
+                crate::plugin::SynthParamsParamId::Oscillator,
+                normalized_waveform,
+            )
+            .set_param(crate::plugin::SynthParamsParamId::Attack, 0.0)
+            .script(|script| script.note_on(57, 1.0))
+            .run()
+    };
+
+    // Crest factor (peak / RMS): ~1.0 square, ~1.41 sine, ~1.73 triangle and
+    // sawtooth.
+    let crest = |result: &truce_test::DriverResult<Plugin>| {
+        let tail = &result.output[0][result.output[0].len() / 2..];
+        let peak = tail.iter().fold(0.0_f32, |p, s| p.max(s.abs()));
+        let rms = (tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt();
+        peak / rms
+    };
+    let sine = crest(&render(0.0));
+    let square = crest(&render(1.0 / 3.0));
+    let triangle = crest(&render(2.0 / 3.0));
+    let sawtooth = render(1.0);
+
+    assert!(square < 1.2, "square crest was {square}");
+    assert!((1.3..1.55).contains(&sine), "sine crest was {sine}");
+    assert!(triangle > 1.6, "triangle crest was {triangle}");
+    let sawtooth_crest = crest(&sawtooth);
+    assert!(sawtooth_crest > 1.6, "sawtooth crest was {sawtooth_crest}");
+    // Unlike the symmetric triangle, the sawtooth has a single rising ramp:
+    // most consecutive samples increase.
+    let tail = &sawtooth.output[0][sawtooth.output[0].len() / 2..];
+    let rising = tail.windows(2).filter(|w| w[1] > w[0]).count();
+    assert!(
+        rising * 10 > tail.len() * 9,
+        "sawtooth rose on {rising} samples"
+    );
+}

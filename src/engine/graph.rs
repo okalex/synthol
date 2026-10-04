@@ -6,7 +6,7 @@ pub(super) struct NodeId(u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NodeKind {
-    SineOscillator,
+    Oscillator,
     OutputEnvelope,
     AudioOutput,
 }
@@ -69,7 +69,7 @@ impl fmt::Display for GraphCompileError {
                 write!(formatter, "invalid port {port:?} on node {}", node.0)
             }
             Self::InvalidInitialTopology => formatter.write_str(
-                "the built-in graph must route one sine oscillator through one output envelope to one audio output",
+                "the built-in graph must route one oscillator through one output envelope to one audio output",
             ),
             Self::Cycle => formatter.write_str("audio graph contains a cycle"),
         }
@@ -88,7 +88,7 @@ impl GraphDocument {
             nodes: vec![
                 GraphNode {
                     id: oscillator,
-                    kind: NodeKind::SineOscillator,
+                    kind: NodeKind::Oscillator,
                 },
                 GraphNode {
                     id: envelope,
@@ -135,7 +135,7 @@ impl GraphDocument {
         let oscillators: Vec<_> = self
             .nodes
             .iter()
-            .filter(|node| node.kind == NodeKind::SineOscillator)
+            .filter(|node| node.kind == NodeKind::Oscillator)
             .collect();
         let outputs: Vec<_> = self
             .nodes
@@ -169,7 +169,7 @@ impl GraphDocument {
 
             let valid_source = matches!(
                 (source.kind, connection.from.port),
-                (NodeKind::SineOscillator, Port::AudioOutput)
+                (NodeKind::Oscillator, Port::AudioOutput)
                     | (NodeKind::OutputEnvelope, Port::AudioOutput)
             );
             let valid_destination = matches!(
