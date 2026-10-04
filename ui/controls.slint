@@ -43,22 +43,37 @@ component KnobArc inherits Path {
 }
 
 export component SynthKnob inherits Rectangle {
-    in-out property <float> value: 0.0;
+    // Not written by the knob, so it can be bound to model data; drags show
+    // `drag-value` until the new value comes back from the parameter.
+    in property <float> value: 0.0;
+    private property <float> drag-value: 0.0;
+    private property <bool> value-dragging: false;
+    private property <float> shown-value: root.value-dragging ? root.drag-value : root.value;
     in property <string> label;
     in property <string> value-text;
     in property <int> parameter-id;
     // LFO destination index this knob accepts drops for, or -1.
     in property <int> mod-target: -1;
     in property <KnobModulation> modulation;
-    // An LFO drag in progress and the pointer in window coordinates.
+    // An LFO drag in progress and the pointer in window coordinates. The
+    // handle's `drop-count` goes in `mod-drop-count`; each drop on this knob
+    // calls `mod-dropped` with its target.
     in property <bool> mod-drag-active;
     in property <length> mod-drag-x;
     in property <length> mod-drag-y;
-    out property <bool> mod-drop-hover: root.mod-target >= 0 && root.mod-drag-active
+    in property <int> mod-drop-count;
+    private property <bool> mod-pointer-inside: root.mod-target >= 0
         && root.mod-drag-x >= root.absolute-position.x
         && root.mod-drag-x < root.absolute-position.x + root.width
         && root.mod-drag-y >= root.absolute-position.y
         && root.mod-drag-y < root.absolute-position.y + 80px;
+    out property <bool> mod-drop-hover: root.mod-drag-active && root.mod-pointer-inside;
+    callback mod-dropped(int);
+    changed mod-drop-count => {
+        if root.mod-pointer-inside {
+            root.mod-dropped(root.mod-target);
+        }
+    }
     callback pressed(int);
     callback changed(int, float);
     callback released(int);
@@ -107,15 +122,15 @@ export component SynthKnob inherits Rectangle {
     // The full swing of the LFO (both directions), with the positive
     // direction drawn brighter so the depth's sign is visible.
     if root.modulation.routed: KnobArc {
-        from: clamp(root.value - root.modulation.depth, 0.0, 1.0);
-        to: clamp(root.value + root.modulation.depth, 0.0, 1.0);
+        from: clamp(root.shown-value - root.modulation.depth, 0.0, 1.0);
+        to: clamp(root.shown-value + root.modulation.depth, 0.0, 1.0);
         stroke: #f2b84d;
         opacity: 0.3;
     }
 
     if root.modulation.routed: KnobArc {
-        from: root.value;
-        to: clamp(root.value + root.modulation.depth, 0.0, 1.0);
+        from: root.shown-value;
+        to: clamp(root.shown-value + root.modulation.depth, 0.0, 1.0);
         stroke: #f2b84d;
     }
 
@@ -130,8 +145,8 @@ export component SynthKnob inherits Rectangle {
 
     Rectangle {
         // Clockwise sweep from 7 o'clock (210deg) to 5 o'clock (510deg).
-        x: 42px + 16px * sin(210deg + root.value * 300deg) - 3px;
-        y: 40px - 16px * cos(210deg + root.value * 300deg) - 3px;
+        x: 42px + 16px * sin(210deg + root.shown-value * 300deg) - 3px;
+        y: 40px - 16px * cos(210deg + root.shown-value * 300deg) - 3px;
         width: 6px;
         height: 6px;
         border-radius: 3px;
@@ -166,8 +181,8 @@ export component SynthKnob inherits Rectangle {
                         root.mod-target,
                         clamp(self.start-value - (self.mouse-y - self.pressed-y) / self.sensitivity, -1.0, 1.0));
                 } else {
-                    root.value = clamp(self.start-value - (self.mouse-y - self.pressed-y) / self.sensitivity, 0.0, 1.0);
-                    root.changed(root.parameter-id, root.value);
+                    root.drag-value = clamp(self.start-value - (self.mouse-y - self.pressed-y) / self.sensitivity, 0.0, 1.0);
+                    root.changed(root.parameter-id, root.drag-value);
                 }
             }
         }
@@ -181,11 +196,14 @@ export component SynthKnob inherits Rectangle {
                     self.start-value = root.modulation.depth;
                 } else {
                     self.start-value = root.value;
+                    root.drag-value = root.value;
+                    root.value-dragging = true;
                     root.pressed(root.parameter-id);
                 }
             } else if self.gesture-active
                     && (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
                 self.gesture-active = false;
+                root.value-dragging = false;
                 if self.depth-gesture {
                     root.mod-depth-released(root.mod-target);
                 } else {
@@ -955,12 +973,13 @@ export component ModRouteRow inherits Rectangle {
 }
 
 // Handle dragged from the LFO onto a knob to route the LFO to it. Reports the
-// pointer in window coordinates while dragging.
+// pointer in window coordinates while dragging, and counts drops so knobs can
+// tell when one lands on them; the pointer stays where the drop happened.
 export component ModDragHandle inherits Rectangle {
     out property <bool> dragging: false;
     out property <length> pointer-x;
     out property <length> pointer-y;
-    callback dropped();
+    out property <int> drop-count: 0;
 
     width: 56px;
     height: 24px;
@@ -1010,11 +1029,39 @@ export component ModDragHandle inherits Rectangle {
                 root.pointer-y = self.absolute-position.y + self.mouse-y;
                 root.dragging = true;
             } else if root.dragging && event.kind == PointerEventKind.up {
-                root.dropped();
+                root.drop-count += 1;
                 root.dragging = false;
             } else if event.kind == PointerEventKind.cancel {
                 root.dragging = false;
             }
         }
+    }
+}
+
+// Small text button. Like the other controls it has no FocusScope, so
+// computer-MIDI keys keep reaching the host.
+export component TextButton inherits Rectangle {
+    in property <string> text;
+    in property <length> font-size: 10px;
+    callback clicked();
+
+    min-width: label.preferred-width + 16px;
+    height: 22px;
+    border-radius: 4px;
+    background: touch.pressed ? #343943 : touch.has-hover ? #2f343e : #292d36;
+    border-width: 1px;
+    border-color: #424754;
+
+    label := Text {
+        text: root.text;
+        font-size: root.font-size;
+        font-weight: 700;
+        color: #c6cad4;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
     }
 }

@@ -230,7 +230,7 @@ fn oscillator_parameter_lists_each_waveform() {
     use truce::prelude::*;
 
     let params = SynthParams::default();
-    assert_eq!(params.oscillator.index(), 0);
+    assert_eq!(params.osc_1_type.index(), 0);
     assert_eq!(
         OscillatorType::variant_names(),
         ["Sine", "Square", "Triangle", "Sawtooth"]
@@ -238,10 +238,10 @@ fn oscillator_parameter_lists_each_waveform() {
 
     for index in 0..4 {
         params.set_normalized(
-            crate::plugin::SynthParamsParamId::Oscillator.into(),
+            crate::plugin::SynthParamsParamId::Osc1Type.into(),
             index as f64 / 3.0,
         );
-        assert_eq!(params.oscillator.index(), index);
+        assert_eq!(params.osc_1_type.index(), index);
     }
 }
 
@@ -254,7 +254,7 @@ fn oscillator_parameter_changes_rendered_waveform() {
         driver!(Plugin)
             .duration(Duration::from_millis(100))
             .set_param(
-                crate::plugin::SynthParamsParamId::Oscillator,
+                crate::plugin::SynthParamsParamId::Osc1Type,
                 normalized_waveform,
             )
             .set_param(crate::plugin::SynthParamsParamId::Attack, 0.0)
@@ -298,7 +298,10 @@ fn phase_parameter_sets_where_notes_start() {
     let first_sample = |normalized_phase| {
         let result = driver!(Plugin)
             .duration(Duration::from_millis(10))
-            .set_param(crate::plugin::SynthParamsParamId::Phase, normalized_phase)
+            .set_param(
+                crate::plugin::SynthParamsParamId::Osc1Phase,
+                normalized_phase,
+            )
             .set_param(crate::plugin::SynthParamsParamId::Attack, 0.0)
             .script(|script| script.note_on(57, 1.0))
             .run();
@@ -350,7 +353,7 @@ fn filter_parameters_shape_the_oscillator_output() {
     let rms = |filter_type: f64, cutoff: f64| {
         let result = driver!(Plugin)
             .duration(Duration::from_millis(200))
-            .set_param(SynthParamsParamId::Oscillator, 1.0)
+            .set_param(SynthParamsParamId::Osc1Type, 1.0)
             .set_param(SynthParamsParamId::Attack, 0.0)
             .set_param(SynthParamsParamId::FilterType, filter_type)
             .set_param(SynthParamsParamId::FilterCutoff, cutoff)
@@ -469,10 +472,24 @@ fn modulation_ranges_match_the_destination_parameters() {
     // mapping must agree with the parameter's.
     let params = SynthParams::default();
     let destinations = [
-        (ModDestination::OscPitch, SynthParamsParamId::OscPitch, 1.0),
         (
-            ModDestination::OscLevel,
-            SynthParamsParamId::OscLevel,
+            ModDestination::OscPitch(0),
+            SynthParamsParamId::Osc1Pitch,
+            1.0,
+        ),
+        (
+            ModDestination::OscLevel(0),
+            SynthParamsParamId::Osc1Level,
+            100.0,
+        ),
+        (
+            ModDestination::OscPitch(3),
+            SynthParamsParamId::Osc4Pitch,
+            1.0,
+        ),
+        (
+            ModDestination::OscLevel(1),
+            SynthParamsParamId::Osc2Level,
             100.0,
         ),
         (
@@ -504,8 +521,8 @@ fn oscillator_pitch_and_level_parameters() {
     use truce_test::{assertions, driver};
 
     let params = SynthParams::default();
-    let pitch: u32 = SynthParamsParamId::OscPitch.into();
-    let level: u32 = SynthParamsParamId::OscLevel.into();
+    let pitch: u32 = SynthParamsParamId::Osc1Pitch.into();
+    let level: u32 = SynthParamsParamId::Osc1Level.into();
     assert_eq!(params.get_plain(pitch), Some(0.0));
     assert_eq!(params.get_plain(level), Some(100.0));
     assert_eq!(params.format_value(pitch, 0.0).as_deref(), Some("+0.00 st"));
@@ -519,7 +536,7 @@ fn oscillator_pitch_and_level_parameters() {
 
     let muted = driver!(Plugin)
         .duration(Duration::from_millis(50))
-        .set_param(SynthParamsParamId::OscLevel, 0.0)
+        .set_param(SynthParamsParamId::Osc1Level, 0.0)
         .script(|script| script.note_on(57, 1.0))
         .run();
     assertions::assert_silence(&muted);
@@ -538,13 +555,25 @@ fn routing_slots_list_each_destination() {
         ModDestinationType::variant_names(),
         [
             "None",
-            "Osc Pitch",
-            "Osc Level",
+            "Osc 1 Pitch",
+            "Osc 1 Level",
             "Filter Cutoff",
-            "Filter Q"
+            "Filter Q",
+            "Osc 2 Pitch",
+            "Osc 2 Level",
+            "Osc 3 Pitch",
+            "Osc 3 Level",
+            "Osc 4 Pitch",
+            "Osc 4 Level",
         ]
     );
     assert_eq!(mod_destination_from_index(0), None);
+    // Saved routes from before multiple oscillators keep their meaning.
+    assert_eq!(
+        mod_destination_from_index(2),
+        Some(ModDestination::OscLevel(0))
+    );
+    assert_eq!(mod_destination_from_index(4), Some(ModDestination::FilterQ));
     for destination in ModDestination::ALL {
         let index = mod_destination_index(Some(destination));
         assert_eq!(mod_destination_from_index(index), Some(destination));
@@ -578,7 +607,7 @@ fn a_routed_lfo_modulates_the_sound() {
             .output[0]
             .clone()
     };
-    let osc_level = 0.5;
+    let osc_level = 0.2;
     // Amounts are normalized: 0.5 is 0 %, 0.0 is -100 %.
     let reference = render(0.0, 0.5);
     // A routed slot with no depth, or depth with no destination, is inert.
@@ -589,4 +618,68 @@ fn a_routed_lfo_modulates_the_sound() {
     assert_ne!(modulated, reference);
     let energy = |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>();
     assert!(energy(&modulated) < energy(&reference) * 0.8);
+}
+
+#[test]
+fn oscillator_count_parameter_adds_oscillators() {
+    use crate::plugin::{OSCILLATOR_PARAMS, SynthParams, SynthParamsParamId};
+    use std::time::Duration;
+    use truce::prelude::*;
+    use truce_test::driver;
+
+    let params = SynthParams::default();
+    let count: u32 = SynthParamsParamId::OscCount.into();
+    assert_eq!(params.get_plain(count), Some(1.0));
+    for oscillator in OSCILLATOR_PARAMS {
+        assert_eq!(params.get_plain(oscillator.level.into()), Some(100.0));
+        assert_eq!(params.get_plain(oscillator.pitch.into()), Some(0.0));
+    }
+
+    let render = |oscillators: f64, osc_2_level: f64| {
+        driver!(Plugin)
+            .duration(Duration::from_millis(50))
+            .set_param(SynthParamsParamId::Attack, 0.0)
+            .set_param(SynthParamsParamId::OscCount, oscillators)
+            .set_param(SynthParamsParamId::Osc1Level, 0.0)
+            .set_param(SynthParamsParamId::Osc2Level, osc_2_level)
+            .script(|script| script.note_on(57, 1.0))
+            .run()
+            .output[0]
+            .clone()
+    };
+    let energy = |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>();
+    // With oscillator 1 muted, only an active oscillator 2 is heard.
+    assert_eq!(energy(&render(0.0, 1.0)), 0.0);
+    assert!(energy(&render(1.0 / 3.0, 1.0)) > 0.0);
+    assert_eq!(energy(&render(1.0 / 3.0, 0.0)), 0.0);
+}
+
+#[test]
+fn an_lfo_can_modulate_a_later_oscillator() {
+    use crate::plugin::SynthParamsParamId;
+    use std::time::Duration;
+    use truce_test::driver;
+
+    let render = |destination: f64, amount: f64| {
+        driver!(Plugin)
+            .duration(Duration::from_millis(100))
+            .set_param(SynthParamsParamId::Attack, 0.0)
+            .set_param(SynthParamsParamId::OscCount, 1.0 / 3.0)
+            .set_param(SynthParamsParamId::Osc1Level, 0.0)
+            .set_param(SynthParamsParamId::LfoRate, 0.9)
+            .set_param(SynthParamsParamId::Mod1Destination, destination)
+            .set_param(SynthParamsParamId::Mod1Amount, amount)
+            .script(|script| script.note_on(57, 1.0))
+            .run()
+            .output[0]
+            .clone()
+    };
+    let energy = |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>();
+    let reference = render(0.0, 0.5);
+    // Osc 2 Level is destination index 6 of 10.
+    let osc_2_level = 0.6;
+    let modulated = render(osc_2_level, 0.0);
+    assert!(energy(&modulated) < energy(&reference) * 0.8);
+    // A route to an inactive oscillator (Osc 3 Level) changes nothing.
+    assert_eq!(render(0.8, 0.0), reference);
 }

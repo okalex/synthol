@@ -6,8 +6,8 @@ use truce::prelude::*;
 use crate::editor;
 use crate::engine::node::envelope::AdsrSettings;
 use crate::engine::{
-    FilterMode, FilterSettings, LfoMode, LfoPositions, LfoSettings, MAX_VOICES, MOD_SLOTS,
-    MidiEvent, ModDestination, ModRoute, SynthEngine, Waveform,
+    FilterMode, FilterSettings, LfoMode, LfoPositions, LfoSettings, MAX_OSCILLATORS, MAX_VOICES,
+    MOD_SLOTS, MidiEvent, ModDestination, ModRoute, SynthEngine, Waveform,
 };
 
 #[derive(ParamEnum)]
@@ -83,28 +83,66 @@ impl From<LfoModeType> for LfoMode {
     }
 }
 
-/// Where an LFO routing slot sends the LFO.
+/// Where an LFO routing slot sends the LFO. Oscillators after the first
+/// come last so sessions saved before they existed keep their routes.
 #[derive(ParamEnum)]
 pub enum ModDestinationType {
     None,
-    #[name = "Osc Pitch"]
-    OscPitch,
-    #[name = "Osc Level"]
-    OscLevel,
+    #[name = "Osc 1 Pitch"]
+    Osc1Pitch,
+    #[name = "Osc 1 Level"]
+    Osc1Level,
     #[name = "Filter Cutoff"]
     FilterCutoff,
     #[name = "Filter Q"]
     FilterQ,
+    #[name = "Osc 2 Pitch"]
+    Osc2Pitch,
+    #[name = "Osc 2 Level"]
+    Osc2Level,
+    #[name = "Osc 3 Pitch"]
+    Osc3Pitch,
+    #[name = "Osc 3 Level"]
+    Osc3Level,
+    #[name = "Osc 4 Pitch"]
+    Osc4Pitch,
+    #[name = "Osc 4 Level"]
+    Osc4Level,
 }
 
 impl From<ModDestinationType> for Option<ModDestination> {
     fn from(destination: ModDestinationType) -> Self {
+        Some(match destination {
+            ModDestinationType::None => return None,
+            ModDestinationType::Osc1Pitch => ModDestination::OscPitch(0),
+            ModDestinationType::Osc1Level => ModDestination::OscLevel(0),
+            ModDestinationType::FilterCutoff => ModDestination::FilterCutoff,
+            ModDestinationType::FilterQ => ModDestination::FilterQ,
+            ModDestinationType::Osc2Pitch => ModDestination::OscPitch(1),
+            ModDestinationType::Osc2Level => ModDestination::OscLevel(1),
+            ModDestinationType::Osc3Pitch => ModDestination::OscPitch(2),
+            ModDestinationType::Osc3Level => ModDestination::OscLevel(2),
+            ModDestinationType::Osc4Pitch => ModDestination::OscPitch(3),
+            ModDestinationType::Osc4Level => ModDestination::OscLevel(3),
+        })
+    }
+}
+
+impl From<Option<ModDestination>> for ModDestinationType {
+    fn from(destination: Option<ModDestination>) -> Self {
         match destination {
-            ModDestinationType::None => None,
-            ModDestinationType::OscPitch => Some(ModDestination::OscPitch),
-            ModDestinationType::OscLevel => Some(ModDestination::OscLevel),
-            ModDestinationType::FilterCutoff => Some(ModDestination::FilterCutoff),
-            ModDestinationType::FilterQ => Some(ModDestination::FilterQ),
+            None => Self::None,
+            Some(ModDestination::OscPitch(0)) => Self::Osc1Pitch,
+            Some(ModDestination::OscLevel(0)) => Self::Osc1Level,
+            Some(ModDestination::FilterCutoff) => Self::FilterCutoff,
+            Some(ModDestination::FilterQ) => Self::FilterQ,
+            Some(ModDestination::OscPitch(1)) => Self::Osc2Pitch,
+            Some(ModDestination::OscLevel(1)) => Self::Osc2Level,
+            Some(ModDestination::OscPitch(2)) => Self::Osc3Pitch,
+            Some(ModDestination::OscLevel(2)) => Self::Osc3Level,
+            Some(ModDestination::OscPitch(3)) => Self::Osc4Pitch,
+            Some(ModDestination::OscLevel(3)) => Self::Osc4Level,
+            Some(ModDestination::OscPitch(_) | ModDestination::OscLevel(_)) => Self::None,
         }
     }
 }
@@ -144,29 +182,37 @@ pub struct SynthParams {
     pub release: FloatParam,
     #[param(name = "Voices", range = "discrete(1, 8)", default = 8)]
     pub voices: IntParam,
-    #[param(name = "Oscillator", default = 0)]
-    pub oscillator: EnumParam<OscillatorType>,
-    #[param(name = "Phase", range = "linear(0, 360)", default = 0.0, unit = "°")]
-    pub phase: FloatParam,
+    // Oscillator 1. Parameter ids follow declaration order, so oscillators
+    // added later are declared after the routing slots to keep saved
+    // sessions loading. See `OSCILLATOR_PARAMS`.
+    #[param(name = "Osc 1 Type", default = 0)]
+    pub osc_1_type: EnumParam<OscillatorType>,
+    #[param(
+        name = "Osc 1 Phase",
+        range = "linear(0, 360)",
+        default = 0.0,
+        unit = "°"
+    )]
+    pub osc_1_phase: FloatParam,
     // The pitch and level ranges must match `engine::modulation`.
     #[param(
-        name = "Osc Pitch",
+        name = "Osc 1 Pitch",
         range = "linear(-24, 24)",
         default = 0.0,
         unit = "st",
         smooth = "linear(10)",
         format = "format_pitch"
     )]
-    pub osc_pitch: FloatParam,
+    pub osc_1_pitch: FloatParam,
     #[param(
-        name = "Osc Level",
+        name = "Osc 1 Level",
         range = "linear(0, 100)",
         default = 100.0,
         unit = "%",
         smooth = "exp(5)",
         format = "format_percent"
     )]
-    pub osc_level: FloatParam,
+    pub osc_1_level: FloatParam,
     #[param(name = "Filter Type", default = 0)]
     pub filter_type: EnumParam<FilterType>,
     #[param(
@@ -242,6 +288,91 @@ pub struct SynthParams {
         format = "format_percent"
     )]
     pub mod_4_amount: FloatParam,
+    /// How many oscillators, from the first, sound. The editor's add and
+    /// remove buttons change it.
+    #[param(name = "Oscillators", range = "discrete(1, 4)", default = 1)]
+    pub osc_count: IntParam,
+    #[param(name = "Osc 2 Type", default = 0)]
+    pub osc_2_type: EnumParam<OscillatorType>,
+    #[param(
+        name = "Osc 2 Phase",
+        range = "linear(0, 360)",
+        default = 0.0,
+        unit = "°"
+    )]
+    pub osc_2_phase: FloatParam,
+    #[param(
+        name = "Osc 2 Pitch",
+        range = "linear(-24, 24)",
+        default = 0.0,
+        unit = "st",
+        smooth = "linear(10)",
+        format = "format_pitch"
+    )]
+    pub osc_2_pitch: FloatParam,
+    #[param(
+        name = "Osc 2 Level",
+        range = "linear(0, 100)",
+        default = 100.0,
+        unit = "%",
+        smooth = "exp(5)",
+        format = "format_percent"
+    )]
+    pub osc_2_level: FloatParam,
+    #[param(name = "Osc 3 Type", default = 0)]
+    pub osc_3_type: EnumParam<OscillatorType>,
+    #[param(
+        name = "Osc 3 Phase",
+        range = "linear(0, 360)",
+        default = 0.0,
+        unit = "°"
+    )]
+    pub osc_3_phase: FloatParam,
+    #[param(
+        name = "Osc 3 Pitch",
+        range = "linear(-24, 24)",
+        default = 0.0,
+        unit = "st",
+        smooth = "linear(10)",
+        format = "format_pitch"
+    )]
+    pub osc_3_pitch: FloatParam,
+    #[param(
+        name = "Osc 3 Level",
+        range = "linear(0, 100)",
+        default = 100.0,
+        unit = "%",
+        smooth = "exp(5)",
+        format = "format_percent"
+    )]
+    pub osc_3_level: FloatParam,
+    #[param(name = "Osc 4 Type", default = 0)]
+    pub osc_4_type: EnumParam<OscillatorType>,
+    #[param(
+        name = "Osc 4 Phase",
+        range = "linear(0, 360)",
+        default = 0.0,
+        unit = "°"
+    )]
+    pub osc_4_phase: FloatParam,
+    #[param(
+        name = "Osc 4 Pitch",
+        range = "linear(-24, 24)",
+        default = 0.0,
+        unit = "st",
+        smooth = "linear(10)",
+        format = "format_pitch"
+    )]
+    pub osc_4_pitch: FloatParam,
+    #[param(
+        name = "Osc 4 Level",
+        range = "linear(0, 100)",
+        default = 100.0,
+        unit = "%",
+        smooth = "exp(5)",
+        format = "format_percent"
+    )]
+    pub osc_4_level: FloatParam,
     // LFO positions published for the editor, one slot per voice; see
     // `encode_lfo_position`. Meters can't be arrays, hence the repetition.
     #[meter]
@@ -279,15 +410,59 @@ pub const MOD_AMOUNT_PARAMS: [SynthParamsParamId; MOD_SLOTS] = [
     SynthParamsParamId::Mod4Amount,
 ];
 
-/// Destination dropdown index for each engine destination; index 0 is None.
+/// One oscillator's parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OscillatorParamIds {
+    pub waveform: SynthParamsParamId,
+    pub phase: SynthParamsParamId,
+    pub pitch: SynthParamsParamId,
+    pub level: SynthParamsParamId,
+}
+
+impl OscillatorParamIds {
+    pub const fn all(&self) -> [SynthParamsParamId; 4] {
+        [self.waveform, self.phase, self.pitch, self.level]
+    }
+}
+
+pub const OSCILLATOR_PARAMS: [OscillatorParamIds; MAX_OSCILLATORS] = [
+    OscillatorParamIds {
+        waveform: SynthParamsParamId::Osc1Type,
+        phase: SynthParamsParamId::Osc1Phase,
+        pitch: SynthParamsParamId::Osc1Pitch,
+        level: SynthParamsParamId::Osc1Level,
+    },
+    OscillatorParamIds {
+        waveform: SynthParamsParamId::Osc2Type,
+        phase: SynthParamsParamId::Osc2Phase,
+        pitch: SynthParamsParamId::Osc2Pitch,
+        level: SynthParamsParamId::Osc2Level,
+    },
+    OscillatorParamIds {
+        waveform: SynthParamsParamId::Osc3Type,
+        phase: SynthParamsParamId::Osc3Phase,
+        pitch: SynthParamsParamId::Osc3Pitch,
+        level: SynthParamsParamId::Osc3Level,
+    },
+    OscillatorParamIds {
+        waveform: SynthParamsParamId::Osc4Type,
+        phase: SynthParamsParamId::Osc4Phase,
+        pitch: SynthParamsParamId::Osc4Pitch,
+        level: SynthParamsParamId::Osc4Level,
+    },
+];
+
+/// A routing slot's destination parameter index; 0 is None.
 pub fn mod_destination_index(destination: Option<ModDestination>) -> u32 {
-    destination.map_or(0, |destination| destination.index() as u32 + 1)
+    ModDestinationType::from(destination).to_index() as u32
 }
 
 pub fn mod_destination_from_index(index: u32) -> Option<ModDestination> {
-    index
-        .checked_sub(1)
-        .and_then(|index| ModDestination::ALL.get(index as usize).copied())
+    let index = index as usize;
+    if index >= ModDestinationType::variant_count() {
+        return None;
+    }
+    ModDestinationType::from_index(index).into()
 }
 
 /// Meter for each voice slot's LFO position, indexed like
@@ -340,6 +515,42 @@ impl SynthParams {
     // Values are already percentages; the default "%" format assumes 0..1.
     fn format_percent(&self, value: f64) -> String {
         format!("{value:.0} %")
+    }
+
+    fn oscillator_params(
+        &self,
+    ) -> [(
+        &EnumParam<OscillatorType>,
+        &FloatParam,
+        &FloatParam,
+        &FloatParam,
+    ); MAX_OSCILLATORS] {
+        [
+            (
+                &self.osc_1_type,
+                &self.osc_1_phase,
+                &self.osc_1_pitch,
+                &self.osc_1_level,
+            ),
+            (
+                &self.osc_2_type,
+                &self.osc_2_phase,
+                &self.osc_2_pitch,
+                &self.osc_2_level,
+            ),
+            (
+                &self.osc_3_type,
+                &self.osc_3_phase,
+                &self.osc_3_pitch,
+                &self.osc_3_level,
+            ),
+            (
+                &self.osc_4_type,
+                &self.osc_4_phase,
+                &self.osc_4_pitch,
+                &self.osc_4_level,
+            ),
+        ]
     }
 
     fn mod_routes(&self) -> [ModRoute; MOD_SLOTS] {
@@ -403,8 +614,14 @@ impl PluginLogic for Synth {
         });
 
         state.engine.set_voice_limit(params.voices.value_usize());
-        state.engine.set_waveform(params.oscillator.value().into());
-        state.engine.set_start_phase(params.phase.read() / 360.0);
+        state
+            .engine
+            .set_oscillator_count(params.osc_count.value_usize());
+        let oscillators = params.oscillator_params();
+        for (index, (waveform, phase, _, _)) in oscillators.iter().enumerate() {
+            state.engine.set_waveform(index, waveform.value().into());
+            state.engine.set_start_phase(index, phase.read() / 360.0);
+        }
 
         state.engine.set_lfo_settings(LfoSettings {
             waveform: params.lfo_shape.value().into(),
@@ -436,10 +653,14 @@ impl PluginLogic for Synth {
                 cutoff_hz: params.filter_cutoff.read(),
                 q: params.filter_q.read(),
             });
-            state.engine.set_oscillator_pitch(params.osc_pitch.read());
-            state
-                .engine
-                .set_oscillator_level(params.osc_level.read() / 100.0);
+            // Inactive oscillators are read too so their smoothers stay
+            // current for when they're added.
+            for (index, (_, _, pitch, level)) in oscillators.iter().enumerate() {
+                state.engine.set_oscillator_pitch(index, pitch.read());
+                state
+                    .engine
+                    .set_oscillator_level(index, level.read() / 100.0);
+            }
             state.engine.set_modulation(&params.mod_routes());
             let sample = state.engine.next_sample(db_to_linear(params.volume.read()));
             for channel in 0..output_channels {

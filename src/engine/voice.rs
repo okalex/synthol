@@ -5,16 +5,17 @@ use super::node::envelope::{AdsrEnvelope, AdsrSettings};
 use super::node::filter::{BiquadState, Filter, FilterSettings};
 use super::node::lfo::{Lfo, LfoSettings};
 use super::node::oscillator::{Oscillator, Waveform};
+use super::{MAX_OSCILLATORS, OscillatorSettings};
 
 /// The control values every voice starts from each sample, before its LFO
 /// modulation is applied.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct VoiceControls {
     pub filter: FilterSettings,
-    /// Oscillator transposition in semitones.
-    pub pitch: f32,
-    /// Oscillator gain, 0 to 1.
-    pub level: f32,
+    /// Per-oscillator settings; only pitch and level are read here.
+    pub oscillators: [OscillatorSettings; MAX_OSCILLATORS],
+    /// How many oscillators, from the first, sound.
+    pub oscillator_count: usize,
     pub depths: ModDepths,
     /// The shared LFO's value in sync mode; `None` in trigger mode, where
     /// each voice uses its own LFO.
@@ -24,7 +25,9 @@ pub(super) struct VoiceControls {
 /// Per-voice node state for the oscillator-to-filter-to-envelope graph.
 #[derive(Debug, Default)]
 pub(super) struct Voice {
-    oscillator: Oscillator,
+    /// Every oscillator follows the voice's note; only the first
+    /// `VoiceControls::oscillator_count` are rendered and mixed.
+    oscillators: [Oscillator; MAX_OSCILLATORS],
     /// Each voice designs its own filter so the LFO can move it per note.
     filter: Filter,
     filter_state: BiquadState,
@@ -39,7 +42,9 @@ pub(super) struct Voice {
 
 impl Voice {
     pub(super) fn reset(&mut self, sample_rate: f32) -> bool {
-        self.oscillator.reset(sample_rate);
+        for oscillator in &mut self.oscillators {
+            oscillator.reset(sample_rate);
+        }
         self.filter.prepare(sample_rate);
         self.filter_state.reset();
         self.lfo.reset(sample_rate);
@@ -56,12 +61,16 @@ impl Voice {
         self.lfo.set_settings(settings);
     }
 
-    pub(super) fn set_waveform(&mut self, waveform: Waveform) {
-        self.oscillator.set_waveform(waveform);
+    pub(super) fn set_waveform(&mut self, oscillator: usize, waveform: Waveform) {
+        if let Some(oscillator) = self.oscillators.get_mut(oscillator) {
+            oscillator.set_waveform(waveform);
+        }
     }
 
-    pub(super) fn set_start_phase(&mut self, phase: f32) {
-        self.oscillator.set_start_phase(phase);
+    pub(super) fn set_start_phase(&mut self, oscillator: usize, phase: f32) {
+        if let Some(oscillator) = self.oscillators.get_mut(oscillator) {
+            oscillator.set_start_phase(phase);
+        }
     }
 
     pub(super) fn note_on(&mut self, note: u8, velocity: u8, started_at: u64) {
@@ -71,8 +80,9 @@ impl Voice {
         if !self.is_active() {
             self.filter_state.reset();
         }
-        self.oscillator
-            .handle_event(MidiEvent::NoteOn { note, velocity });
+        for oscillator in &mut self.oscillators {
+            oscillator.handle_event(MidiEvent::NoteOn { note, velocity });
+        }
         self.envelope.note_on();
         self.lfo.start();
         self.note = Some(note);
@@ -80,8 +90,10 @@ impl Voice {
     }
 
     pub(super) fn note_off(&mut self) {
-        if let Some(note) = self.oscillator.active_note() {
-            self.oscillator.handle_event(MidiEvent::NoteOff { note });
+        if let Some(note) = self.oscillators[0].active_note() {
+            for oscillator in &mut self.oscillators {
+                oscillator.handle_event(MidiEvent::NoteOff { note });
+            }
             self.envelope.note_off();
         }
         // An envelope released at level 0 goes idle at once, and an inactive
@@ -102,12 +114,16 @@ impl Voice {
         let own_lfo = self.lfo.next_sample();
         self.apply_controls(controls, controls.sync_lfo.unwrap_or(own_lfo));
 
+        let oscillator_count = controls.oscillator_count.clamp(1, MAX_OSCILLATORS);
         let mut audio = 0.0;
         let mut output = 0.0;
 
         for &node in graph.execution_order() {
             if node == graph.oscillator() {
-                audio = self.oscillator.next_sample();
+                audio = self.oscillators[..oscillator_count]
+                    .iter_mut()
+                    .map(Oscillator::next_sample)
+                    .sum();
             } else if node == graph.filter() {
                 audio = self
                     .filter_state
@@ -119,8 +135,10 @@ impl Voice {
             }
         }
 
-        if !self.envelope.is_active() && !self.oscillator.has_active_note() {
-            self.oscillator.stop();
+        if !self.envelope.is_active() && !self.is_held() {
+            for oscillator in &mut self.oscillators {
+                oscillator.stop();
+            }
             self.filter_state.reset();
             self.lfo.stop();
             self.note = None;
@@ -133,10 +151,17 @@ impl Voice {
         let modulate = |destination: ModDestination, value: f32| {
             destination.modulate(value, controls.depths.depth(destination) * lfo)
         };
-        self.oscillator
-            .set_pitch(modulate(ModDestination::OscPitch, controls.pitch));
-        self.oscillator
-            .set_level(modulate(ModDestination::OscLevel, controls.level));
+        let count = controls.oscillator_count.clamp(1, MAX_OSCILLATORS);
+        for (index, (oscillator, settings)) in self
+            .oscillators
+            .iter_mut()
+            .zip(&controls.oscillators)
+            .enumerate()
+            .take(count)
+        {
+            oscillator.set_pitch(modulate(ModDestination::OscPitch(index), settings.pitch));
+            oscillator.set_level(modulate(ModDestination::OscLevel(index), settings.level));
+        }
         self.filter.set_settings(FilterSettings {
             cutoff_hz: modulate(ModDestination::FilterCutoff, controls.filter.cutoff_hz),
             q: modulate(ModDestination::FilterQ, controls.filter.q),
@@ -149,12 +174,14 @@ impl Voice {
         self.note
     }
 
+    /// Every oscillator gets the same note events, so the first speaks for
+    /// all of them.
     pub(super) fn is_held(&self) -> bool {
-        self.oscillator.has_active_note()
+        self.oscillators[0].has_active_note()
     }
 
     pub(super) fn is_active(&self) -> bool {
-        self.oscillator.has_active_note() || self.envelope.is_active()
+        self.is_held() || self.envelope.is_active()
     }
 
     /// This note's LFO position, or `None` if the voice is silent.

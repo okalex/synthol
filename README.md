@@ -3,7 +3,7 @@
 A minimal polyphonic instrument plugin built with Rust and
 [Truce](https://github.com/truce-audio/truce). It accepts MIDI note-on and
 note-off events, uses MIDI note numbers for pitch, and scales amplitude by
-note-on velocity. Each voice's oscillator runs through a filter, then a
+note-on velocity. Each voice mixes its oscillators and runs them through a filter, then a
 reusable ADSR envelope shapes it at the output stage (10 ms attack, 500 ms decay, -6 dB sustain, 1 s release) before output
 gain. Up to eight voices can sound at once; a **Voices** dropdown in the editor
 (also a host-automatable parameter) sets the limit from Mono to 8. When all
@@ -11,14 +11,24 @@ voices are busy, a new note steals the oldest releasing voice, or else the
 oldest held one. Voices are summed without normalization, so large chords can
 exceed 0 dBFS; lower the output gain if needed.
 
-An **Oscillator** dropdown (also a host-automatable parameter) selects the
+The **Oscillators** section starts with one oscillator. **+ Add** adds
+another (up to four) and each row's × button removes that oscillator (the last
+one can't be removed); later oscillators move up to fill the gap. The number
+of oscillators is the host-automatable **Oscillators** parameter, and each
+oscillator has its own host-automatable type, phase, pitch, and level
+parameters ("Osc 1 Type" through "Osc 4 Level"). Every voice plays all active
+oscillators on its note and sums them, unnormalized, before the filter, so
+several oscillators at full level can exceed 0 dBFS; lower their levels if
+needed.
+
+Each oscillator row has a type dropdown that selects the
 waveform: sine, square, triangle, or sawtooth. The square and sawtooth waves
 are band-limited with PolyBLEP; the triangle is generated directly and has
 some mild aliasing at high pitches. Square is full-scale, so it sounds louder
 than the other shapes. A **Phase** knob (0° to 360°, also host-automatable)
 sets where in the cycle each new note starts; sounding notes are unaffected.
 Phases other than 0° start mid-cycle, so short attacks may click. A **Pitch**
-knob transposes the oscillator by ±24 semitones and a **Level** knob (0% to
+knob transposes that oscillator by ±24 semitones and a **Level** knob (0% to
 100%) sets its volume before the filter; both are host-automatable and
 smoothed. Next to the
 dropdown, a waveform display plots one cycle (0° to 360°) of the selected
@@ -51,8 +61,8 @@ recently pressed note's line is solid and older notes' lines are faint (up to
 one per voice). Because the position comes from audio processing, a
 Sync LFO only advances while the host is processing the plugin.
 
-The LFO can modulate oscillator **Pitch** and **Level** and filter **Cutoff**
-and **Q**. Drag the amber **MOD** handle from the LFO Routing row onto one of
+The LFO can modulate any oscillator's **Pitch** and **Level** and filter
+**Cutoff** and **Q**. Drag the amber **MOD** handle from the LFO Routing row onto one of
 those knobs (they light up while you drag) to route the LFO to it. A routed
 knob shows an amber arc: the faint arc covers the full swing around the knob's
 value, the bright arc shows the direction and depth of a positive LFO peak,
@@ -61,7 +71,7 @@ routed knob up or down to change the depth without touching the knob's value;
 hold Shift for fine control. The routing list below the handle shows the four
 routing slots, each a host-automatable **Destination** and bipolar **Amount**
 (-100% to 100% of the destination's knob range). Each slot has a destination
-dropdown, an amount slider (Shift-drag for fine control, double-click to reset),
+dropdown (listing the pitch and level of every active oscillator), an amount slider (Shift-drag for fine control, double-click to reset),
 the depth in the destination's units, and a × button that clears the slot. A
 new route starts at a modest depth: 1 semitone, 25% level, 1 octave of cutoff,
 or ×2 Q. The amounts are measured along each knob's own taper, so pitch moves
@@ -69,7 +79,9 @@ in semitones, cutoff in octaves, and Q multiplicatively (shown as ×/÷).
 Modulated values stay within each knob's range, and several slots targeting the
 same destination add up. Every note is modulated by its own LFO in Trigger mode
 and by the shared LFO in Sync mode, and each voice has its own filter, so
-modulating the cutoff doesn't affect other notes.
+modulating the cutoff doesn't affect other notes. Removing an oscillator clears
+the routes that target it, and routes to later oscillators follow them as they
+move up.
 
 The synth has no effects yet. The Slint editor
 currently provides a reusable ADSR graph/knob panel for the output envelope,

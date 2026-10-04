@@ -18,6 +18,32 @@ use voice::{Voice, VoiceControls};
 
 /// Hard upper bound on simultaneous voices.
 pub const MAX_VOICES: usize = 8;
+/// Hard upper bound on oscillators per voice.
+pub const MAX_OSCILLATORS: usize = 4;
+
+/// One oscillator's controls. Every voice runs each oscillator on its note
+/// and mixes the active ones before the filter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OscillatorSettings {
+    pub waveform: Waveform,
+    /// Normalized phase (`0.0..1.0`, 0 to 360 degrees) new notes start from.
+    pub start_phase: f32,
+    /// Transposition in semitones, before LFO modulation.
+    pub pitch: f32,
+    /// Gain (`0.0..=1.0`), before LFO modulation.
+    pub level: f32,
+}
+
+impl Default for OscillatorSettings {
+    fn default() -> Self {
+        Self {
+            waveform: Waveform::Sine,
+            start_phase: 0.0,
+            pitch: 0.0,
+            level: 1.0,
+        }
+    }
+}
 
 /// Where each running LFO is in its cycle, for display.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -33,10 +59,9 @@ pub struct LfoPositions {
 pub struct SynthEngine {
     graph: CompiledGraph,
     filter: FilterSettings,
-    /// Oscillator transposition in semitones.
-    pitch: f32,
-    /// Oscillator gain, 0 to 1.
-    level: f32,
+    oscillators: [OscillatorSettings; MAX_OSCILLATORS],
+    /// How many oscillators, from the first, sound.
+    oscillator_count: usize,
     depths: ModDepths,
     /// The free-running LFO shared by every voice in sync mode. In trigger
     /// mode each voice runs its own instead.
@@ -56,8 +81,8 @@ impl Default for SynthEngine {
         Self {
             graph,
             filter: FilterSettings::default(),
-            pitch: 0.0,
-            level: 1.0,
+            oscillators: [OscillatorSettings::default(); MAX_OSCILLATORS],
+            oscillator_count: 1,
             depths: ModDepths::default(),
             sync_lfo: Lfo::default(),
             lfo_mode: LfoMode::default(),
@@ -99,14 +124,37 @@ impl SynthEngine {
         self.filter = settings;
     }
 
-    /// Transpose every voice by `semitones`, before LFO modulation.
-    pub fn set_oscillator_pitch(&mut self, semitones: f32) {
-        self.pitch = semitones;
+    /// Sound the first `count` oscillators (clamped to
+    /// `1..=MAX_OSCILLATORS`).
+    pub fn set_oscillator_count(&mut self, count: usize) {
+        self.oscillator_count = count.clamp(1, MAX_OSCILLATORS);
     }
 
-    /// Set the oscillator gain (`0.0..=1.0`), before LFO modulation.
-    pub fn set_oscillator_level(&mut self, level: f32) {
-        self.level = level;
+    pub fn oscillator_count(&self) -> usize {
+        self.oscillator_count
+    }
+
+    /// Apply every control of oscillator `index`; out-of-range indices are
+    /// ignored.
+    pub fn set_oscillator(&mut self, index: usize, settings: OscillatorSettings) {
+        self.set_waveform(index, settings.waveform);
+        self.set_start_phase(index, settings.start_phase);
+        self.set_oscillator_pitch(index, settings.pitch);
+        self.set_oscillator_level(index, settings.level);
+    }
+
+    /// Transpose oscillator `index` by `semitones`, before LFO modulation.
+    pub fn set_oscillator_pitch(&mut self, index: usize, semitones: f32) {
+        if let Some(oscillator) = self.oscillators.get_mut(index) {
+            oscillator.pitch = semitones;
+        }
+    }
+
+    /// Set oscillator `index`'s gain (`0.0..=1.0`), before LFO modulation.
+    pub fn set_oscillator_level(&mut self, index: usize, level: f32) {
+        if let Some(oscillator) = self.oscillators.get_mut(index) {
+            oscillator.level = level;
+        }
     }
 
     /// Route the LFO to destinations; routes sharing a destination add up.
@@ -156,17 +204,25 @@ impl SynthEngine {
         positions
     }
 
-    pub fn set_waveform(&mut self, waveform: Waveform) {
+    pub fn set_waveform(&mut self, index: usize, waveform: Waveform) {
+        let Some(oscillator) = self.oscillators.get_mut(index) else {
+            return;
+        };
+        oscillator.waveform = waveform;
         for voice in &mut self.voices {
-            voice.set_waveform(waveform);
+            voice.set_waveform(index, waveform);
         }
     }
 
-    /// Set the normalized oscillator phase (`0.0..1.0`, 0 to 360 degrees)
-    /// that new notes start from.
-    pub fn set_start_phase(&mut self, phase: f32) {
+    /// Set the normalized phase (`0.0..1.0`, 0 to 360 degrees) that new
+    /// notes start oscillator `index` from.
+    pub fn set_start_phase(&mut self, index: usize, phase: f32) {
+        let Some(oscillator) = self.oscillators.get_mut(index) else {
+            return;
+        };
+        oscillator.start_phase = phase;
         for voice in &mut self.voices {
-            voice.set_start_phase(phase);
+            voice.set_start_phase(index, phase);
         }
     }
 
@@ -236,8 +292,8 @@ impl SynthEngine {
         let sync_lfo = self.sync_lfo.next_sample();
         let controls = VoiceControls {
             filter: self.filter,
-            pitch: self.pitch,
-            level: self.level,
+            oscillators: self.oscillators,
+            oscillator_count: self.oscillator_count,
             depths: self.depths,
             sync_lfo: (self.lfo_mode == LfoMode::Sync).then_some(sync_lfo),
         };
@@ -379,7 +435,7 @@ mod tests {
     fn render_note(settings: super::FilterSettings) -> Vec<f32> {
         let mut engine = SynthEngine::default();
         engine.reset(48_000.0);
-        engine.set_waveform(super::Waveform::Sawtooth);
+        engine.set_waveform(0, super::Waveform::Sawtooth);
         engine.set_filter_settings(settings);
         note_on(&mut engine, 57);
         (0..4_800).map(|_| engine.next_sample(1.0)).collect()
@@ -776,8 +832,8 @@ mod tests {
                 q: 4.0,
                 ..Default::default()
             });
-            engine.set_oscillator_pitch(3.0);
-            engine.set_oscillator_level(0.6);
+            engine.set_oscillator_pitch(0, 3.0);
+            engine.set_oscillator_level(0, 0.6);
             note_on(&mut engine, 60);
             render(&mut engine, 2_000)
         };
@@ -794,8 +850,8 @@ mod tests {
         let reference = render(&mut engine, 4_800);
 
         let mut engine = modulated_engine(super::LfoMode::Trigger, &[]);
-        engine.set_oscillator_pitch(12.0);
-        engine.set_oscillator_level(0.5);
+        engine.set_oscillator_pitch(0, 12.0);
+        engine.set_oscillator_level(0, 0.5);
         note_on(&mut engine, 69);
         let shifted = render(&mut engine, 4_800);
 
@@ -810,7 +866,7 @@ mod tests {
         // An octave of depth: the first half-second plays A5, the second A3.
         let mut engine = modulated_engine(
             super::LfoMode::Trigger,
-            &[route(ModDestination::OscPitch, 12.0 / 48.0)],
+            &[route(ModDestination::OscPitch(0), 12.0 / 48.0)],
         );
         note_on(&mut engine, 69);
         let samples = render(&mut engine, 48_000);
@@ -826,9 +882,9 @@ mod tests {
         // and full for the second.
         let mut engine = modulated_engine(
             super::LfoMode::Trigger,
-            &[route(ModDestination::OscLevel, -0.75)],
+            &[route(ModDestination::OscLevel(0), -0.75)],
         );
-        engine.set_oscillator_level(0.5);
+        engine.set_oscillator_level(0, 0.5);
         note_on(&mut engine, 69);
         let samples = render(&mut engine, 48_000);
         assert!(samples[..23_000].iter().all(|&sample| sample == 0.0));
@@ -863,7 +919,7 @@ mod tests {
 
     #[test]
     fn trigger_mode_restarts_modulation_per_note_and_sync_does_not() {
-        let level_route = [route(ModDestination::OscLevel, -1.0)];
+        let level_route = [route(ModDestination::OscLevel(0), -1.0)];
         // Trigger: each note starts at the top of its own LFO cycle, muted
         // for half a second, no matter when it's played.
         let mut engine = modulated_engine(super::LfoMode::Trigger, &level_route);
@@ -886,5 +942,131 @@ mod tests {
         note_on(&mut engine, 67);
         let samples = render(&mut engine, 4_800);
         assert!(rms(&samples) > 0.5, "{}", rms(&samples));
+    }
+
+    fn silent_oscillator_settings() -> super::OscillatorSettings {
+        super::OscillatorSettings {
+            level: 0.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_the_active_oscillators_sound_and_they_mix() {
+        let mut single = modulated_engine(super::LfoMode::Trigger, &[]);
+        note_on(&mut single, 69);
+        let single = render(&mut single, 4_800);
+
+        // A second oscillator past the count is ignored.
+        let mut hidden = modulated_engine(super::LfoMode::Trigger, &[]);
+        hidden.set_oscillator(
+            1,
+            super::OscillatorSettings {
+                waveform: super::Waveform::Square,
+                pitch: 7.0,
+                ..Default::default()
+            },
+        );
+        note_on(&mut hidden, 69);
+        assert_eq!(render(&mut hidden, 4_800), single);
+
+        // Two identical oscillators double the amplitude.
+        let mut doubled = modulated_engine(super::LfoMode::Trigger, &[]);
+        doubled.set_oscillator_count(2);
+        note_on(&mut doubled, 69);
+        let doubled = render(&mut doubled, 4_800);
+        for (a, b) in doubled.iter().zip(&single) {
+            assert!((a - 2.0 * b).abs() < 1e-5);
+        }
+        assert_eq!(doubled.len(), single.len());
+    }
+
+    #[test]
+    fn each_oscillator_has_independent_controls() {
+        // Oscillator 1 silenced, oscillator 2 an octave up at half level:
+        // the output is oscillator 2 alone.
+        let mut engine = modulated_engine(super::LfoMode::Trigger, &[]);
+        engine.set_oscillator_count(2);
+        engine.set_oscillator(0, silent_oscillator_settings());
+        engine.set_oscillator(
+            1,
+            super::OscillatorSettings {
+                pitch: 12.0,
+                level: 0.5,
+                ..Default::default()
+            },
+        );
+        note_on(&mut engine, 69);
+        let samples = render(&mut engine, 4_800);
+        assert_eq!(rising_zero_crossings(&samples), 87);
+        let peak = samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+        assert!((peak - 0.5).abs() < 0.01, "{peak}");
+
+        // The waveform and start phase follow oscillator 2's own settings.
+        let mut square = modulated_engine(super::LfoMode::Trigger, &[]);
+        square.set_oscillator_count(2);
+        square.set_oscillator(0, silent_oscillator_settings());
+        square.set_oscillator(
+            1,
+            super::OscillatorSettings {
+                waveform: super::Waveform::Square,
+                start_phase: 0.25,
+                ..Default::default()
+            },
+        );
+        note_on(&mut square, 69);
+        let square = render(&mut square, 4_800);
+        // Oscillator 1 with the same settings sounds identical.
+        let mut reference = modulated_engine(super::LfoMode::Trigger, &[]);
+        reference.set_waveform(0, super::Waveform::Square);
+        reference.set_start_phase(0, 0.25);
+        note_on(&mut reference, 69);
+        assert_eq!(square, render(&mut reference, 4_800));
+        assert!(rms(&square) > 0.9, "{}", rms(&square));
+    }
+
+    #[test]
+    fn lfo_routes_target_a_single_oscillator() {
+        // Muting oscillator 2's level for the first half-cycle leaves
+        // oscillator 1 playing alone.
+        let mut engine = modulated_engine(
+            super::LfoMode::Trigger,
+            &[route(ModDestination::OscLevel(1), -1.0)],
+        );
+        engine.set_oscillator_count(2);
+        note_on(&mut engine, 69);
+        let modulated = render(&mut engine, 4_800);
+
+        let mut alone = modulated_engine(super::LfoMode::Trigger, &[]);
+        note_on(&mut alone, 69);
+        assert_eq!(modulated, render(&mut alone, 4_800));
+
+        // A route to an inactive oscillator changes nothing.
+        let mut unused = modulated_engine(
+            super::LfoMode::Trigger,
+            &[route(ModDestination::OscPitch(3), 0.5)],
+        );
+        unused.set_oscillator_count(2);
+        note_on(&mut unused, 69);
+        let mut reference = modulated_engine(super::LfoMode::Trigger, &[]);
+        reference.set_oscillator_count(2);
+        note_on(&mut reference, 69);
+        assert_eq!(render(&mut unused, 4_800), render(&mut reference, 4_800));
+    }
+
+    #[test]
+    fn oscillator_count_and_index_are_bounded() {
+        let mut engine = SynthEngine::default();
+        assert_eq!(engine.oscillator_count(), 1);
+        engine.set_oscillator_count(0);
+        assert_eq!(engine.oscillator_count(), 1);
+        engine.set_oscillator_count(99);
+        assert_eq!(engine.oscillator_count(), super::MAX_OSCILLATORS);
+        // Out-of-range oscillators are ignored rather than panicking.
+        engine.set_oscillator(super::MAX_OSCILLATORS, Default::default());
+        engine.set_modulation(&[route(ModDestination::OscPitch(99), 1.0)]);
+        engine.reset(48_000.0);
+        note_on(&mut engine, 69);
+        render(&mut engine, 10);
     }
 }

@@ -14,12 +14,14 @@ use crate::engine::node::filter::{MAX_Q, MIN_Q};
 use crate::engine::node::lfo::render_lfo_cycle;
 use crate::engine::node::oscillator::{naive_waveform_sample, render_cycle};
 use crate::engine::{
-    FilterMode, FilterSettings, MAX_VOICES, MOD_SLOTS, ModDestination, ModRoute, Waveform,
+    FilterMode, FilterSettings, MAX_OSCILLATORS, MAX_VOICES, MOD_SLOTS, ModDestination, ModRoute,
+    Waveform,
 };
 use crate::plugin::{
     FilterType, LFO_POSITION_METERS, LfoModeType, LfoShapeType, MOD_AMOUNT_PARAMS,
-    MOD_DESTINATION_PARAMS, OscillatorType, SynthParams, SynthParamsParamId, decode_lfo_newest,
-    decode_lfo_position, mod_destination_from_index, mod_destination_index,
+    MOD_DESTINATION_PARAMS, ModDestinationType, OSCILLATOR_PARAMS, OscillatorType, SynthParams,
+    SynthParamsParamId, decode_lfo_newest, decode_lfo_position, mod_destination_from_index,
+    mod_destination_index,
 };
 
 slint::include_modules!();
@@ -86,32 +88,19 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
 
             let pending_edits_for_ui = pending_edits.clone();
             let state_for_ui = state.clone();
-            ui.on_oscillator_selected(move |index| {
-                let id = SynthParamsParamId::Oscillator;
+            ui.on_oscillator_selected(move |oscillator, index| {
+                let Some(params) = oscillator_params(oscillator) else {
+                    return;
+                };
+                let id = params.waveform;
                 let normalized = oscillator_to_normalized(index);
                 state_for_ui.params().set_normalized(id.into(), normalized);
                 enqueue_edit(&pending_edits_for_ui, (id, normalized));
             });
 
             let state_for_ui = state.clone();
-            ui.on_phase_changed(move |value| {
-                state_for_ui
-                    .params()
-                    .set_normalized(SynthParamsParamId::Phase.into(), f64::from(value));
-            });
-            let pending_edits_for_ui = pending_edits.clone();
-            let state_for_ui = state.clone();
-            ui.on_phase_released(move || {
-                let id = SynthParamsParamId::Phase;
-                enqueue_edit(
-                    &pending_edits_for_ui,
-                    (id, f64::from(state_for_ui.get_param(id))),
-                );
-            });
-
-            let state_for_ui = state.clone();
-            ui.on_osc_changed(move |id, value| {
-                if let Some(parameter) = oscillator_parameter(id) {
+            ui.on_osc_changed(move |oscillator, id, value| {
+                if let Some(parameter) = oscillator_parameter(oscillator, id) {
                     state_for_ui
                         .params()
                         .set_normalized(parameter.into(), f64::from(value));
@@ -119,13 +108,36 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
             });
             let pending_edits_for_ui = pending_edits.clone();
             let state_for_ui = state.clone();
-            ui.on_osc_released(move |id| {
-                if let Some(parameter) = oscillator_parameter(id) {
+            ui.on_osc_released(move |oscillator, id| {
+                if let Some(parameter) = oscillator_parameter(oscillator, id) {
                     enqueue_edit(
                         &pending_edits_for_ui,
                         (parameter, f64::from(state_for_ui.get_param(parameter))),
                     );
                 }
+            });
+
+            let pending_edits_for_ui = pending_edits.clone();
+            let state_for_ui = state.clone();
+            ui.on_oscillator_add(move || {
+                let count = state_for_ui.params().osc_count.value_usize();
+                if count < MAX_OSCILLATORS {
+                    set_param(
+                        &state_for_ui,
+                        &pending_edits_for_ui,
+                        SynthParamsParamId::OscCount,
+                        oscillator_count_to_normalized(count + 1),
+                    );
+                }
+            });
+
+            let pending_edits_for_ui = pending_edits.clone();
+            let state_for_ui = state.clone();
+            ui.on_oscillator_remove(move |oscillator| {
+                let Ok(removed) = usize::try_from(oscillator) else {
+                    return;
+                };
+                remove_oscillator(&state_for_ui, &pending_edits_for_ui, removed);
             });
 
             ui.on_oscillator_cycle_path(|index, phase, width, height| {
@@ -266,8 +278,11 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
                 let Some(slot) = mod_slot(slot) else {
                     return;
                 };
-                let destination = mod_destination_from_index(u32::try_from(index).unwrap_or(0));
-                let route = read_routes(&state_for_ui)[slot];
+                let routes = read_routes(&state_for_ui);
+                let shown =
+                    shown_oscillators(state_for_ui.params().osc_count.value_usize(), &routes);
+                let destination = destination_from_option(shown, index);
+                let route = routes[slot];
                 // A freshly routed slot starts at a useful depth rather than zero.
                 let amount = match destination {
                     Some(destination) if route.amount == 0.0 => {
@@ -348,6 +363,10 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
                 ModDestination::ALL.len()
             ]));
             ui.set_knob_mods(slint::ModelRc::from(knob_mod_model.clone()));
+            let oscillator_model = Rc::new(slint::VecModel::from(vec![OscillatorRow::default()]));
+            ui.set_oscillators(slint::ModelRc::from(oscillator_model.clone()));
+            let destination_model = Rc::new(slint::VecModel::from(destination_options(1)));
+            ui.set_mod_destinations(slint::ModelRc::from(destination_model.clone()));
 
             Box::new(move |state: &PluginContext<SynthParams>| {
                 for (id, value) in pending_edits.borrow_mut().drain(..) {
@@ -377,19 +396,12 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
                     state.format_param(SynthParamsParamId::Release),
                 ));
                 ui.set_voices(state.params().voices.value_i32());
-                ui.set_oscillator(state.params().oscillator.index() as i32);
-                ui.set_phase(state.get_param(SynthParamsParamId::Phase));
-                ui.set_phase_text(slint::SharedString::from(
-                    state.format_param(SynthParamsParamId::Phase),
-                ));
-                ui.set_osc_pitch(state.get_param(SynthParamsParamId::OscPitch));
-                ui.set_osc_pitch_text(slint::SharedString::from(
-                    state.format_param(SynthParamsParamId::OscPitch),
-                ));
-                ui.set_osc_level(state.get_param(SynthParamsParamId::OscLevel));
-                ui.set_osc_level_text(slint::SharedString::from(
-                    state.format_param(SynthParamsParamId::OscLevel),
-                ));
+                let oscillator_count = state.params().osc_count.value_usize();
+                let rows: Vec<_> = OSCILLATOR_PARAMS[..oscillator_count]
+                    .iter()
+                    .map(|params| oscillator_row(state, params))
+                    .collect();
+                sync_model(&oscillator_model, rows);
                 ui.set_filter_type(state.params().filter_type.index() as i32);
                 ui.set_filter_cutoff(state.get_param(SynthParamsParamId::FilterCutoff));
                 ui.set_filter_cutoff_text(slint::SharedString::from(
@@ -416,7 +428,11 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
                 }
 
                 let routes = read_routes(state);
-                for (row, slot) in mod_route_slots(&routes).into_iter().enumerate() {
+                let shown = shown_oscillators(oscillator_count, &routes);
+                if destination_model.row_count() != destination_options(shown).len() {
+                    destination_model.set_vec(destination_options(shown));
+                }
+                for (row, slot) in mod_route_slots(&routes, shown).into_iter().enumerate() {
                     if mod_slot_model.row_data(row).as_ref() != Some(&slot) {
                         mod_slot_model.set_row_data(row, slot);
                     }
@@ -442,6 +458,154 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
         },
     )
     .into_editor()
+}
+
+/// Updates `model` to `rows`, touching only rows that changed.
+fn sync_model<T: Clone + PartialEq + 'static>(model: &slint::VecModel<T>, rows: Vec<T>) {
+    while model.row_count() > rows.len() {
+        model.remove(model.row_count() - 1);
+    }
+    for (index, row) in rows.into_iter().enumerate() {
+        if index >= model.row_count() {
+            model.push(row);
+        } else if model.row_data(index).as_ref() != Some(&row) {
+            model.set_row_data(index, row);
+        }
+    }
+}
+
+fn oscillator_row(
+    state: &PluginContext<SynthParams>,
+    params: &crate::plugin::OscillatorParamIds,
+) -> OscillatorRow {
+    let last = (OscillatorType::variant_count() - 1) as f32;
+    OscillatorRow {
+        waveform: (state.get_param(params.waveform) * last).round() as i32,
+        phase: state.get_param(params.phase),
+        phase_text: state.format_param(params.phase).into(),
+        pitch: state.get_param(params.pitch),
+        pitch_text: state.format_param(params.pitch).into(),
+        level: state.get_param(params.level),
+        level_text: state.format_param(params.level).into(),
+    }
+}
+
+fn set_param(
+    state: &PluginContext<SynthParams>,
+    edits: &Rc<RefCell<Vec<(SynthParamsParamId, f64)>>>,
+    id: SynthParamsParamId,
+    normalized: f64,
+) {
+    state.params().set_normalized(id.into(), normalized);
+    enqueue_edit(edits, (id, normalized));
+}
+
+/// Removes oscillator `removed`: later oscillators move down to fill its
+/// place, the last one returns to its defaults, and LFO routes follow the
+/// oscillators they target, those to the removed one being cleared.
+fn remove_oscillator(
+    state: &PluginContext<SynthParams>,
+    edits: &Rc<RefCell<Vec<(SynthParamsParamId, f64)>>>,
+    removed: usize,
+) {
+    let count = state.params().osc_count.value_usize();
+    if count <= 1 || removed >= count {
+        return;
+    }
+
+    let infos = state.params().param_infos();
+    let default_normalized = |id: SynthParamsParamId| {
+        let id = u32::from(id);
+        infos
+            .iter()
+            .find(|info| info.id == id)
+            .map_or(0.0, |info| info.range.normalize(info.default_plain))
+    };
+    let values =
+        OSCILLATOR_PARAMS.map(|params| params.all().map(|id| f64::from(state.get_param(id))));
+    let defaults = OSCILLATOR_PARAMS[0].all().map(default_normalized);
+    let shifted = oscillators_after_removal(values, defaults, count, removed);
+    for (params, (old, new)) in OSCILLATOR_PARAMS.iter().zip(values.iter().zip(&shifted)) {
+        for (id, (old, new)) in params.all().into_iter().zip(old.iter().zip(new)) {
+            if old != new {
+                set_param(state, edits, id, *new);
+            }
+        }
+    }
+
+    let routes = read_routes(state);
+    let remapped = routes_after_removal(&routes, removed);
+    for (slot, (old, new)) in routes.iter().zip(&remapped).enumerate() {
+        if old.destination != new.destination {
+            set_param(
+                state,
+                edits,
+                MOD_DESTINATION_PARAMS[slot],
+                destination_to_normalized(new.destination),
+            );
+        }
+        if old.amount != new.amount {
+            set_param(
+                state,
+                edits,
+                MOD_AMOUNT_PARAMS[slot],
+                amount_to_normalized(new.amount),
+            );
+        }
+    }
+
+    set_param(
+        state,
+        edits,
+        SynthParamsParamId::OscCount,
+        oscillator_count_to_normalized(count - 1),
+    );
+}
+
+/// Each oscillator's normalized parameter values once oscillator `removed`
+/// of the first `count` is taken out: later ones move down a place and the
+/// vacated last place gets `defaults`.
+fn oscillators_after_removal<const N: usize>(
+    mut values: [[f64; N]; MAX_OSCILLATORS],
+    defaults: [f64; N],
+    count: usize,
+    removed: usize,
+) -> [[f64; N]; MAX_OSCILLATORS] {
+    let count = count.min(MAX_OSCILLATORS);
+    if removed >= count {
+        return values;
+    }
+    values.copy_within(removed + 1..count, removed);
+    values[count - 1] = defaults;
+    values
+}
+
+/// Routes once oscillator `removed` is taken out: routes to it are cleared
+/// and routes to later oscillators follow them down a place.
+fn routes_after_removal(routes: &[ModRoute; MOD_SLOTS], removed: usize) -> [ModRoute; MOD_SLOTS] {
+    routes.map(|route| {
+        let destination = match route.destination {
+            Some(destination) if destination.oscillator() == Some(removed) => {
+                return ModRoute::default();
+            }
+            Some(ModDestination::OscPitch(index)) if index > removed => {
+                Some(ModDestination::OscPitch(index - 1))
+            }
+            Some(ModDestination::OscLevel(index)) if index > removed => {
+                Some(ModDestination::OscLevel(index - 1))
+            }
+            destination => destination,
+        };
+        ModRoute {
+            destination,
+            amount: route.amount,
+        }
+    })
+}
+
+fn oscillator_count_to_normalized(count: usize) -> f64 {
+    let last = (MAX_OSCILLATORS - 1) as f64;
+    ((count as f64 - 1.0) / last).clamp(0.0, 1.0)
 }
 
 fn enqueue_edit(
@@ -588,10 +752,19 @@ fn filter_response_path(settings: FilterSettings, width: f32, height: f32) -> St
     commands
 }
 
-fn oscillator_parameter(id: i32) -> Option<SynthParamsParamId> {
+fn oscillator_params(oscillator: i32) -> Option<&'static crate::plugin::OscillatorParamIds> {
+    usize::try_from(oscillator)
+        .ok()
+        .and_then(|index| OSCILLATOR_PARAMS.get(index))
+}
+
+/// An oscillator knob's parameter. Id 0 is pitch, 1 level and 2 phase.
+fn oscillator_parameter(oscillator: i32, id: i32) -> Option<SynthParamsParamId> {
+    let params = oscillator_params(oscillator)?;
     match id {
-        0 => Some(SynthParamsParamId::OscPitch),
-        1 => Some(SynthParamsParamId::OscLevel),
+        0 => Some(params.pitch),
+        1 => Some(params.level),
+        2 => Some(params.phase),
         _ => None,
     }
 }
@@ -599,11 +772,56 @@ fn oscillator_parameter(id: i32) -> Option<SynthParamsParamId> {
 /// The knob parameter each modulation destination moves.
 fn destination_parameter(destination: ModDestination) -> SynthParamsParamId {
     match destination {
-        ModDestination::OscPitch => SynthParamsParamId::OscPitch,
-        ModDestination::OscLevel => SynthParamsParamId::OscLevel,
+        ModDestination::OscPitch(index) => OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)].pitch,
+        ModDestination::OscLevel(index) => OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)].level,
         ModDestination::FilterCutoff => SynthParamsParamId::FilterCutoff,
         ModDestination::FilterQ => SynthParamsParamId::FilterQ,
     }
+}
+
+/// How many oscillators the routing dropdowns list: the active ones, plus
+/// any a route still targets.
+fn shown_oscillators(count: usize, routes: &[ModRoute]) -> usize {
+    routes
+        .iter()
+        .filter_map(|route| route.destination?.oscillator())
+        .map(|index| index + 1)
+        .fold(count, usize::max)
+        .clamp(1, MAX_OSCILLATORS)
+}
+
+/// The routing dropdown's choices for `oscillators` oscillators: None, each
+/// oscillator's pitch and level, then the filter.
+fn destination_options(oscillators: usize) -> Vec<slint::SharedString> {
+    std::iter::once(None)
+        .chain(dropdown_destinations(oscillators).map(Some))
+        .map(|destination| ModDestinationType::from(destination).name().into())
+        .collect()
+}
+
+fn dropdown_destinations(oscillators: usize) -> impl Iterator<Item = ModDestination> {
+    (0..oscillators.min(MAX_OSCILLATORS))
+        .flat_map(|index| {
+            [
+                ModDestination::OscPitch(index),
+                ModDestination::OscLevel(index),
+            ]
+        })
+        .chain([ModDestination::FilterCutoff, ModDestination::FilterQ])
+}
+
+/// A destination's index in `destination_options(oscillators)`.
+fn destination_option(oscillators: usize, destination: Option<ModDestination>) -> i32 {
+    destination
+        .and_then(|destination| {
+            dropdown_destinations(oscillators).position(|option| option == destination)
+        })
+        .map_or(0, |index| index as i32 + 1)
+}
+
+fn destination_from_option(oscillators: usize, index: i32) -> Option<ModDestination> {
+    let index = usize::try_from(index).ok()?.checked_sub(1)?;
+    dropdown_destinations(oscillators).nth(index)
 }
 
 /// A knob's `mod-target` (destination index) as a destination.
@@ -620,7 +838,7 @@ fn mod_slot(slot: i32) -> Option<usize> {
 fn read_routes(state: &PluginContext<SynthParams>) -> [ModRoute; MOD_SLOTS] {
     std::array::from_fn(|slot| {
         let destination = state.get_param(MOD_DESTINATION_PARAMS[slot]);
-        let index = (destination * ModDestination::ALL.len() as f32).round();
+        let index = (destination * destination_steps() as f32).round();
         let amount = state.get_param(MOD_AMOUNT_PARAMS[slot]);
         ModRoute {
             destination: mod_destination_from_index(index as u32),
@@ -629,8 +847,12 @@ fn read_routes(state: &PluginContext<SynthParams>) -> [ModRoute; MOD_SLOTS] {
     })
 }
 
+fn destination_steps() -> usize {
+    ModDestinationType::variant_count() - 1
+}
+
 fn destination_to_normalized(destination: Option<ModDestination>) -> f64 {
-    f64::from(mod_destination_index(destination)) / ModDestination::ALL.len() as f64
+    f64::from(mod_destination_index(destination)) / destination_steps() as f64
 }
 
 /// A bipolar route amount as its parameter's normalized value.
@@ -642,8 +864,8 @@ fn amount_to_normalized(amount: f32) -> f64 {
 /// octave of cutoff or a doubling of Q.
 fn default_mod_amount(destination: ModDestination) -> f32 {
     match destination {
-        ModDestination::OscPitch => 1.0 / (2.0 * MAX_PITCH_SEMITONES),
-        ModDestination::OscLevel => 0.25,
+        ModDestination::OscPitch(_) => 1.0 / (2.0 * MAX_PITCH_SEMITONES),
+        ModDestination::OscLevel(_) => 0.25,
         ModDestination::FilterCutoff => 1.0 / (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).log2(),
         ModDestination::FilterQ => 1.0 / (MAX_Q / MIN_Q).log2(),
     }
@@ -653,10 +875,10 @@ fn default_mod_amount(destination: ModDestination) -> f32 {
 /// destination's units.
 fn format_mod_amount(destination: ModDestination, amount: f32) -> String {
     match destination {
-        ModDestination::OscPitch => {
+        ModDestination::OscPitch(_) => {
             format!("{:+.2} st", amount * 2.0 * MAX_PITCH_SEMITONES)
         }
-        ModDestination::OscLevel => format!("{:+.0} %", amount * 100.0),
+        ModDestination::OscLevel(_) => format!("{:+.0} %", amount * 100.0),
         ModDestination::FilterCutoff => {
             format!(
                 "{:+.2} oct",
@@ -674,9 +896,14 @@ fn format_mod_amount(destination: ModDestination, amount: f32) -> String {
     }
 }
 
-fn mod_route_slots(routes: &[ModRoute; MOD_SLOTS]) -> [ModRouteSlot; MOD_SLOTS] {
+/// The routing rows, with destinations indexing
+/// `destination_options(oscillators)`.
+fn mod_route_slots(
+    routes: &[ModRoute; MOD_SLOTS],
+    oscillators: usize,
+) -> [ModRouteSlot; MOD_SLOTS] {
     routes.map(|route| ModRouteSlot {
-        destination: mod_destination_index(route.destination) as i32,
+        destination: destination_option(oscillators, route.destination),
         amount: amount_to_normalized(route.amount) as f32,
         amount_text: route
             .destination
@@ -719,7 +946,11 @@ fn depth_edit(
 
 /// Modulation arcs per destination, in normalized knob units. `bases` are
 /// the knobs' values and `lfo` the running LFO's current output, if any.
-fn knob_modulation(routes: &[ModRoute], bases: [f32; 4], lfo: Option<f32>) -> [KnobModulation; 4] {
+fn knob_modulation(
+    routes: &[ModRoute],
+    bases: [f32; ModDestination::ALL.len()],
+    lfo: Option<f32>,
+) -> [KnobModulation; ModDestination::ALL.len()] {
     ModDestination::ALL.map(|destination| {
         let routed: Vec<_> = routes
             .iter()
@@ -927,19 +1158,19 @@ mod tests {
         let cutoff = ModDestination::FilterCutoff;
         let empty = routes(&[]);
         assert_eq!(slot_for_new_route(&empty, cutoff), Some(0));
-        let used = routes(&[(Some(ModDestination::OscPitch), 0.1), (None, 0.3)]);
+        let used = routes(&[(Some(ModDestination::OscPitch(0)), 0.1), (None, 0.3)]);
         assert_eq!(slot_for_new_route(&used, cutoff), Some(1));
         let routed = routes(&[(None, 0.0), (Some(cutoff), 0.1)]);
         assert_eq!(slot_for_new_route(&routed, cutoff), None);
-        let full = routes(&[(Some(ModDestination::OscPitch), 0.1); MOD_SLOTS]);
+        let full = routes(&[(Some(ModDestination::OscPitch(0)), 0.1); MOD_SLOTS]);
         assert_eq!(slot_for_new_route(&full, cutoff), None);
     }
 
     #[test]
     fn knob_depth_edits_the_first_route_and_keeps_the_rest() {
-        let level = ModDestination::OscLevel;
+        let level = ModDestination::OscLevel(0);
         let routes = routes(&[
-            (Some(ModDestination::OscPitch), 0.5),
+            (Some(ModDestination::OscPitch(0)), 0.5),
             (Some(level), 0.2),
             (Some(level), 0.3),
         ]);
@@ -952,28 +1183,40 @@ mod tests {
     fn knob_modulation_sums_routes_and_follows_the_lfo() {
         let cutoff = ModDestination::FilterCutoff;
         let routes = routes(&[(Some(cutoff), 0.25), (Some(cutoff), 0.25)]);
-        let bases = [0.5, 1.0, 0.6, 0.2];
+        let c = cutoff.index();
+        let mut bases = [0.5; ModDestination::ALL.len()];
+        bases[c] = 0.6;
 
         let idle = knob_modulation(&routes, bases, None);
-        assert!(idle[2].routed && !idle[2].live_visible);
-        assert_eq!(idle[2].depth, 0.5);
+        assert!(idle[c].routed && !idle[c].live_visible);
+        assert_eq!(idle[c].depth, 0.5);
         assert!(!idle[0].routed && idle[0].depth == 0.0);
 
         let running = knob_modulation(&routes, bases, Some(-0.5));
-        assert!(running[2].live_visible);
-        assert!((running[2].live - 0.35).abs() < 1e-6);
+        assert!(running[c].live_visible);
+        assert!((running[c].live - 0.35).abs() < 1e-6);
         assert!(!running[1].live_visible);
-        assert_eq!(knob_modulation(&routes, bases, Some(1.0))[2].live, 1.0);
+        assert_eq!(knob_modulation(&routes, bases, Some(1.0))[c].live, 1.0);
+
+        // Each oscillator's knobs show only their own routes.
+        let level_2 = ModDestination::OscLevel(1);
+        let level_routes = super::tests::routes(&[(Some(level_2), 0.25)]);
+        let modulation = knob_modulation(&level_routes, bases, None);
+        assert!(modulation[level_2.index()].routed);
+        assert!(!modulation[ModDestination::OscLevel(0).index()].routed);
     }
 
     #[test]
     fn mod_amounts_read_in_destination_units() {
-        let pitch = default_mod_amount(ModDestination::OscPitch);
+        let pitch = default_mod_amount(ModDestination::OscPitch(0));
         assert_eq!(
-            format_mod_amount(ModDestination::OscPitch, pitch),
+            format_mod_amount(ModDestination::OscPitch(0), pitch),
             "+1.00 st"
         );
-        assert_eq!(format_mod_amount(ModDestination::OscLevel, -0.25), "-25 %");
+        assert_eq!(
+            format_mod_amount(ModDestination::OscLevel(0), -0.25),
+            "-25 %"
+        );
         let octave = default_mod_amount(ModDestination::FilterCutoff);
         assert_eq!(
             format_mod_amount(ModDestination::FilterCutoff, octave),
@@ -986,7 +1229,7 @@ mod tests {
 
     #[test]
     fn mod_slots_show_destination_amount_and_text() {
-        let slots = mod_route_slots(&routes(&[(Some(ModDestination::OscLevel), -0.5)]));
+        let slots = mod_route_slots(&routes(&[(Some(ModDestination::OscLevel(0)), -0.5)]), 1);
         assert_eq!(slots[0].destination, 2);
         assert_eq!(slots[0].amount, 0.25);
         assert_eq!(slots[0].amount_text, "-50 %");
@@ -994,12 +1237,118 @@ mod tests {
         assert_eq!(slots[1].amount, 0.5);
         assert!(slots[1].amount_text.is_empty());
         assert_eq!(
-            destination_to_normalized(Some(ModDestination::OscLevel)),
-            0.5
+            destination_to_normalized(Some(ModDestination::OscLevel(0))),
+            0.2
         );
-        assert_eq!(mod_target(3), Some(ModDestination::FilterQ));
-        assert_eq!(mod_target(4), None);
+        assert_eq!(mod_target(3), Some(ModDestination::OscLevel(1)));
+        assert_eq!(mod_target(9), Some(ModDestination::FilterQ));
+        assert_eq!(mod_target(10), None);
         assert_eq!(mod_slot(-1), None);
+    }
+
+    #[test]
+    fn routing_dropdown_lists_the_shown_oscillators() {
+        assert_eq!(
+            destination_options(1),
+            [
+                "None",
+                "Osc 1 Pitch",
+                "Osc 1 Level",
+                "Filter Cutoff",
+                "Filter Q"
+            ]
+        );
+        let options = destination_options(3);
+        assert_eq!(options.len(), 9);
+        assert_eq!(options[5], "Osc 3 Pitch");
+        assert_eq!(options[7], "Filter Cutoff");
+
+        for oscillators in 1..=MAX_OSCILLATORS {
+            for index in 0..destination_options(oscillators).len() as i32 {
+                let destination = destination_from_option(oscillators, index);
+                assert_eq!(destination_option(oscillators, destination), index);
+            }
+        }
+        assert_eq!(destination_from_option(2, 0), None);
+        assert_eq!(
+            destination_from_option(2, 4),
+            Some(ModDestination::OscLevel(1))
+        );
+        assert_eq!(
+            destination_from_option(2, 5),
+            Some(ModDestination::FilterCutoff)
+        );
+        assert_eq!(destination_from_option(2, 99), None);
+
+        // A route to an oscillator beyond the count keeps it listed.
+        let routes = routes(&[(Some(ModDestination::OscPitch(2)), 0.1)]);
+        assert_eq!(shown_oscillators(1, &routes), 3);
+        assert_eq!(shown_oscillators(4, &routes), 4);
+        assert_eq!(shown_oscillators(0, &[]), 1);
+    }
+
+    #[test]
+    fn oscillator_knobs_map_to_their_own_parameters() {
+        assert_eq!(
+            oscillator_parameter(0, 0),
+            Some(SynthParamsParamId::Osc1Pitch)
+        );
+        assert_eq!(
+            oscillator_parameter(1, 1),
+            Some(SynthParamsParamId::Osc2Level)
+        );
+        assert_eq!(
+            oscillator_parameter(3, 2),
+            Some(SynthParamsParamId::Osc4Phase)
+        );
+        assert_eq!(oscillator_parameter(4, 0), None);
+        assert_eq!(oscillator_parameter(-1, 0), None);
+        assert_eq!(oscillator_parameter(0, 3), None);
+        assert_eq!(
+            destination_parameter(ModDestination::OscPitch(2)),
+            SynthParamsParamId::Osc3Pitch
+        );
+        assert_eq!(oscillator_count_to_normalized(1), 0.0);
+        assert_eq!(oscillator_count_to_normalized(4), 1.0);
+    }
+
+    #[test]
+    fn removing_an_oscillator_shifts_the_later_ones_down() {
+        let values = [[0.1], [0.2], [0.3], [0.4]];
+        assert_eq!(
+            oscillators_after_removal(values, [9.0], 3, 0),
+            [[0.2], [0.3], [9.0], [0.4]]
+        );
+        assert_eq!(
+            oscillators_after_removal(values, [9.0], 4, 3),
+            [[0.1], [0.2], [0.3], [9.0]]
+        );
+        assert_eq!(
+            oscillators_after_removal(values, [9.0], 4, 1),
+            [[0.1], [0.3], [0.4], [9.0]]
+        );
+        assert_eq!(oscillators_after_removal(values, [9.0], 2, 2), values);
+    }
+
+    #[test]
+    fn removing_an_oscillator_cleans_up_its_routes() {
+        let routes = routes(&[
+            (Some(ModDestination::OscPitch(1)), 0.5),
+            (Some(ModDestination::OscLevel(2)), -0.25),
+            (Some(ModDestination::OscPitch(0)), 0.1),
+            (Some(ModDestination::FilterQ), 0.3),
+        ]);
+        let after = routes_after_removal(&routes, 1);
+        assert_eq!(after[0], ModRoute::default());
+        assert_eq!(
+            after[1],
+            ModRoute {
+                destination: Some(ModDestination::OscLevel(1)),
+                amount: -0.25
+            }
+        );
+        assert_eq!(after[2], routes[2]);
+        assert_eq!(after[3], routes[3]);
     }
 
     #[test]
