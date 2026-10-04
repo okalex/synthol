@@ -1,24 +1,47 @@
 mod graph;
 mod midi;
+pub mod modulation;
 pub mod node;
 mod voice;
 
 pub use midi::MidiEvent;
 
 use graph::{CompiledGraph, GraphDocument};
+use modulation::ModDepths;
+pub use modulation::{MOD_SLOTS, ModDestination, ModRoute};
 use node::envelope::AdsrSettings;
-use node::filter::Filter;
 pub use node::filter::{FilterMode, FilterSettings};
+use node::lfo::Lfo;
+pub use node::lfo::{LfoMode, LfoSettings};
 pub use node::oscillator::Waveform;
-use voice::Voice;
+use voice::{Voice, VoiceControls};
 
 /// Hard upper bound on simultaneous voices.
 pub const MAX_VOICES: usize = 8;
 
+/// Where each running LFO is in its cycle, for display.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LfoPositions {
+    /// Normalized phase per voice slot, `None` where no LFO is running. In
+    /// sync mode only slot 0 is used, for the shared LFO.
+    pub phases: [Option<f32>; MAX_VOICES],
+    /// The slot of the most recently started LFO among the running ones.
+    pub newest: Option<usize>,
+}
+
 #[derive(Debug)]
 pub struct SynthEngine {
     graph: CompiledGraph,
-    filter: Filter,
+    filter: FilterSettings,
+    /// Oscillator transposition in semitones.
+    pitch: f32,
+    /// Oscillator gain, 0 to 1.
+    level: f32,
+    depths: ModDepths,
+    /// The free-running LFO shared by every voice in sync mode. In trigger
+    /// mode each voice runs its own instead.
+    sync_lfo: Lfo,
+    lfo_mode: LfoMode,
     voices: [Voice; MAX_VOICES],
     voice_limit: usize,
     next_voice_stamp: u64,
@@ -32,7 +55,12 @@ impl Default for SynthEngine {
 
         Self {
             graph,
-            filter: Filter::default(),
+            filter: FilterSettings::default(),
+            pitch: 0.0,
+            level: 1.0,
+            depths: ModDepths::default(),
+            sync_lfo: Lfo::default(),
+            lfo_mode: LfoMode::default(),
             voices: Default::default(),
             voice_limit: MAX_VOICES,
             next_voice_stamp: 0,
@@ -45,7 +73,10 @@ impl SynthEngine {
         if !sample_rate.is_finite() || sample_rate <= 0.0 {
             return false;
         }
-        self.filter.prepare(sample_rate);
+        self.sync_lfo.reset(sample_rate);
+        if self.lfo_mode == LfoMode::Sync {
+            self.sync_lfo.start();
+        }
         let mut prepared = true;
         for voice in &mut self.voices {
             prepared &= voice.reset(sample_rate);
@@ -61,11 +92,68 @@ impl SynthEngine {
         }
     }
 
-    /// Set the filter every voice's oscillator is routed through. The
-    /// coefficients are only recomputed when the settings change, so this is
-    /// cheap to call per sample while a smoothed parameter settles.
+    /// Set the filter every voice's oscillator is routed through, before LFO
+    /// modulation. Each voice recomputes its coefficients only when its
+    /// (modulated) settings change, so this is cheap to call per sample.
     pub fn set_filter_settings(&mut self, settings: FilterSettings) {
-        self.filter.set_settings(settings);
+        self.filter = settings;
+    }
+
+    /// Transpose every voice by `semitones`, before LFO modulation.
+    pub fn set_oscillator_pitch(&mut self, semitones: f32) {
+        self.pitch = semitones;
+    }
+
+    /// Set the oscillator gain (`0.0..=1.0`), before LFO modulation.
+    pub fn set_oscillator_level(&mut self, level: f32) {
+        self.level = level;
+    }
+
+    /// Route the LFO to destinations; routes sharing a destination add up.
+    pub fn set_modulation(&mut self, routes: &[ModRoute]) {
+        self.depths = ModDepths::from_routes(routes);
+    }
+
+    pub fn set_lfo_settings(&mut self, settings: LfoSettings) {
+        self.lfo_mode = settings.mode;
+        self.sync_lfo.set_settings(settings);
+        match settings.mode {
+            LfoMode::Sync if !self.sync_lfo.is_running() => self.sync_lfo.start(),
+            LfoMode::Sync => {}
+            LfoMode::Trigger => self.sync_lfo.stop(),
+        }
+        for voice in &mut self.voices {
+            voice.set_lfo_settings(settings);
+        }
+    }
+
+    /// Positions of the LFOs that apply in the current mode. Voice LFOs keep
+    /// running in sync mode (they're cheap), so switching back to trigger
+    /// mode shows where each sounding note's LFO is.
+    pub fn lfo_positions(&self) -> LfoPositions {
+        let mut positions = LfoPositions::default();
+        match self.lfo_mode {
+            LfoMode::Sync => {
+                if self.sync_lfo.is_running() {
+                    positions.phases[0] = Some(self.sync_lfo.phase());
+                    positions.newest = Some(0);
+                }
+            }
+            LfoMode::Trigger => {
+                let mut newest_start = None;
+                for (index, voice) in self.voices.iter().enumerate() {
+                    let Some(phase) = voice.lfo_phase() else {
+                        continue;
+                    };
+                    positions.phases[index] = Some(phase);
+                    if newest_start.is_none_or(|start| voice.started_at() > start) {
+                        newest_start = Some(voice.started_at());
+                        positions.newest = Some(index);
+                    }
+                }
+            }
+        }
+        positions
     }
 
     pub fn set_waveform(&mut self, waveform: Waveform) {
@@ -143,13 +231,23 @@ impl SynthEngine {
     }
 
     pub fn next_sample(&mut self, gain: f32) -> f32 {
+        // Advance the shared LFO every sample, even with no notes, so it
+        // free-runs.
+        let sync_lfo = self.sync_lfo.next_sample();
+        let controls = VoiceControls {
+            filter: self.filter,
+            pitch: self.pitch,
+            level: self.level,
+            depths: self.depths,
+            sync_lfo: (self.lfo_mode == LfoMode::Sync).then_some(sync_lfo),
+        };
         let graph = &self.graph;
-        let filter = self.filter.coefficients();
         let output: f32 = self
             .voices
             .iter_mut()
-            .map(|voice| voice.next_sample(graph, filter))
+            .map(|voice| voice.next_sample(graph, &controls))
             .sum();
+
         output * gain
     }
 
@@ -348,7 +446,10 @@ mod tests {
         }
         assert!(!engine.has_active_note());
 
-        assert_eq!(first_samples(&mut engine), first_samples(&mut resonant_engine()));
+        assert_eq!(
+            first_samples(&mut engine),
+            first_samples(&mut resonant_engine())
+        );
     }
 
     #[test]
@@ -477,5 +578,313 @@ mod tests {
         note_on(&mut engine, 72);
         assert!(engine.voice_for_note(60).is_none());
         assert!(engine.voice_for_note(72).unwrap().is_held());
+    }
+
+    fn lfo_settings(mode: super::LfoMode) -> super::LfoSettings {
+        super::LfoSettings {
+            waveform: super::Waveform::Sine,
+            frequency_hz: 2.0,
+            mode,
+        }
+    }
+
+    fn run(engine: &mut SynthEngine, samples: usize) {
+        for _ in 0..samples {
+            engine.next_sample(1.0);
+        }
+    }
+
+    fn running_phases(engine: &SynthEngine) -> Vec<f32> {
+        engine
+            .lfo_positions()
+            .phases
+            .iter()
+            .flatten()
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn trigger_mode_gives_each_note_its_own_lfo() {
+        let mut engine = SynthEngine::default();
+        engine.reset(44_100.0);
+        engine.set_lfo_settings(lfo_settings(super::LfoMode::Trigger));
+        assert_eq!(engine.lfo_positions(), super::LfoPositions::default());
+
+        note_on(&mut engine, 24);
+        run(&mut engine, 4_410);
+        note_on(&mut engine, 38);
+        let positions = engine.lfo_positions();
+        let first = positions.phases[0].unwrap();
+        let second = positions.phases[1].unwrap();
+        // 0.1 s at 2 Hz: the first note's LFO keeps going; the second starts.
+        assert!((first - 0.2).abs() < 1e-4, "{first}");
+        assert_eq!(second, 0.0);
+        assert_eq!(positions.newest, Some(1));
+
+        run(&mut engine, 4_410);
+        let positions = engine.lfo_positions();
+        assert!((positions.phases[0].unwrap() - 0.4).abs() < 1e-4);
+        assert!((positions.phases[1].unwrap() - 0.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn retriggered_and_stolen_voices_restart_their_lfo() {
+        let mut engine = SynthEngine::default();
+        engine.reset(44_100.0);
+        engine.set_voice_limit(1);
+        engine.set_lfo_settings(lfo_settings(super::LfoMode::Trigger));
+        note_on(&mut engine, 60);
+        run(&mut engine, 1_000);
+        note_on(&mut engine, 64);
+        assert_eq!(running_phases(&engine), [0.0]);
+    }
+
+    #[test]
+    fn trigger_lfos_stop_when_their_note_finishes() {
+        let mut engine = SynthEngine::default();
+        engine.reset(44_100.0);
+        engine.set_lfo_settings(lfo_settings(super::LfoMode::Trigger));
+        note_on(&mut engine, 60);
+        note_on(&mut engine, 64);
+        run(&mut engine, 1_000);
+        engine.handle_event(MidiEvent::NoteOff { note: 60 });
+        // Releasing notes keep their LFO until the release ends.
+        run(&mut engine, 100);
+        assert_eq!(running_phases(&engine).len(), 2);
+
+        run(&mut engine, 2 * 44_100);
+        let positions = engine.lfo_positions();
+        assert_eq!(positions.phases.iter().flatten().count(), 1);
+        assert_eq!(positions.newest, Some(1));
+
+        engine.handle_event(MidiEvent::NoteOff { note: 64 });
+        run(&mut engine, 2 * 44_100);
+        assert_eq!(engine.lfo_positions(), super::LfoPositions::default());
+    }
+
+    #[test]
+    fn a_note_released_before_it_sounds_drops_its_lfo() {
+        let mut engine = SynthEngine::default();
+        engine.reset(44_100.0);
+        engine.set_lfo_settings(lfo_settings(super::LfoMode::Trigger));
+        note_on(&mut engine, 60);
+        engine.handle_event(MidiEvent::NoteOff { note: 60 });
+        assert_eq!(engine.lfo_positions(), super::LfoPositions::default());
+    }
+
+    #[test]
+    fn sync_lfo_runs_without_notes_and_does_not_restart() {
+        let mut engine = SynthEngine::default();
+        engine.reset(44_100.0);
+        engine.set_lfo_settings(lfo_settings(super::LfoMode::Sync));
+        run(&mut engine, 4_410);
+        let positions = engine.lfo_positions();
+        let phase = positions.phases[0].unwrap();
+        assert!((phase - 0.2).abs() < 1e-4, "{phase}");
+        assert_eq!(positions.newest, Some(0));
+
+        note_on(&mut engine, 60);
+        note_on(&mut engine, 64);
+        assert_eq!(running_phases(&engine), [phase]);
+    }
+
+    #[test]
+    fn switching_modes_shows_the_matching_lfos() {
+        let mut engine = SynthEngine::default();
+        engine.reset(44_100.0);
+        engine.set_lfo_settings(lfo_settings(super::LfoMode::Trigger));
+        note_on(&mut engine, 60);
+        run(&mut engine, 4_410);
+        engine.set_lfo_settings(lfo_settings(super::LfoMode::Sync));
+        assert_eq!(running_phases(&engine), [0.0]);
+        run(&mut engine, 4_410);
+        engine.set_lfo_settings(lfo_settings(super::LfoMode::Trigger));
+        let phase = engine.lfo_positions().phases[0].unwrap();
+        assert!((phase - 0.4).abs() < 1e-4, "{phase}");
+    }
+
+    #[test]
+    fn an_unrouted_lfo_does_not_change_the_audio_output() {
+        let render = |settings: Option<super::LfoSettings>| {
+            let mut engine = SynthEngine::default();
+            engine.reset(44_100.0);
+            if let Some(settings) = settings {
+                engine.set_lfo_settings(settings);
+            }
+            note_on(&mut engine, 60);
+            note_on(&mut engine, 67);
+            (0..2_000)
+                .map(|_| engine.next_sample(1.0))
+                .collect::<Vec<_>>()
+        };
+        let reference = render(None);
+        for mode in [super::LfoMode::Trigger, super::LfoMode::Sync] {
+            assert_eq!(render(Some(lfo_settings(mode))), reference);
+        }
+    }
+
+    use super::{ModDestination, ModRoute};
+
+    /// An engine with an instant, full-level envelope and a 1 Hz square LFO,
+    /// which reads +1 for the first half of its cycle and -1 for the second.
+    fn modulated_engine(mode: super::LfoMode, routes: &[ModRoute]) -> SynthEngine {
+        use crate::engine::AdsrSettings;
+        use std::time::Duration;
+
+        let mut engine = SynthEngine::default();
+        engine.reset(48_000.0);
+        engine.set_output_envelope_settings(AdsrSettings {
+            attack: Duration::ZERO,
+            decay: Duration::ZERO,
+            sustain_db: 0.0,
+            release: Duration::ZERO,
+        });
+        engine.set_lfo_settings(super::LfoSettings {
+            waveform: super::Waveform::Square,
+            frequency_hz: 1.0,
+            mode,
+        });
+        engine.set_modulation(routes);
+        engine
+    }
+
+    fn route(destination: ModDestination, amount: f32) -> ModRoute {
+        ModRoute {
+            destination: Some(destination),
+            amount,
+        }
+    }
+
+    fn render(engine: &mut SynthEngine, samples: usize) -> Vec<f32> {
+        (0..samples).map(|_| engine.next_sample(1.0)).collect()
+    }
+
+    fn rising_zero_crossings(samples: &[f32]) -> usize {
+        samples
+            .windows(2)
+            .filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0)
+            .count()
+    }
+
+    #[test]
+    fn empty_and_zero_routes_leave_the_output_untouched() {
+        let render_with = |routes: &[ModRoute]| {
+            let mut engine = modulated_engine(super::LfoMode::Trigger, routes);
+            engine.set_filter_settings(super::FilterSettings {
+                cutoff_hz: 2_000.0,
+                q: 4.0,
+                ..Default::default()
+            });
+            engine.set_oscillator_pitch(3.0);
+            engine.set_oscillator_level(0.6);
+            note_on(&mut engine, 60);
+            render(&mut engine, 2_000)
+        };
+        let reference = render_with(&[]);
+        let zero = ModDestination::ALL.map(|destination| route(destination, 0.0));
+        assert_eq!(render_with(&zero), reference);
+        assert_eq!(render_with(&[ModRoute::default(); 4]), reference);
+    }
+
+    #[test]
+    fn pitch_and_level_controls_shape_the_note() {
+        let mut engine = modulated_engine(super::LfoMode::Trigger, &[]);
+        note_on(&mut engine, 69);
+        let reference = render(&mut engine, 4_800);
+
+        let mut engine = modulated_engine(super::LfoMode::Trigger, &[]);
+        engine.set_oscillator_pitch(12.0);
+        engine.set_oscillator_level(0.5);
+        note_on(&mut engine, 69);
+        let shifted = render(&mut engine, 4_800);
+
+        // 0.1 s of 440 Hz against 880 Hz, at half the amplitude.
+        assert_eq!(rising_zero_crossings(&reference), 43);
+        assert_eq!(rising_zero_crossings(&shifted), 87);
+        assert!((rms(&shifted) - rms(&reference) * 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn lfo_modulates_pitch_in_semitones() {
+        // An octave of depth: the first half-second plays A5, the second A3.
+        let mut engine = modulated_engine(
+            super::LfoMode::Trigger,
+            &[route(ModDestination::OscPitch, 12.0 / 48.0)],
+        );
+        note_on(&mut engine, 69);
+        let samples = render(&mut engine, 48_000);
+        let up = rising_zero_crossings(&samples[..4_800]);
+        let down = rising_zero_crossings(&samples[24_000..28_800]);
+        assert!((87..=88).contains(&up), "{up}");
+        assert!((21..=22).contains(&down), "{down}");
+    }
+
+    #[test]
+    fn lfo_modulates_level_and_clamps_it() {
+        // Level 0.5 swung by half the range: silent for the first half-cycle
+        // and full for the second.
+        let mut engine = modulated_engine(
+            super::LfoMode::Trigger,
+            &[route(ModDestination::OscLevel, -0.75)],
+        );
+        engine.set_oscillator_level(0.5);
+        note_on(&mut engine, 69);
+        let samples = render(&mut engine, 48_000);
+        assert!(samples[..23_000].iter().all(|&sample| sample == 0.0));
+        let peak = samples[25_000..]
+            .iter()
+            .fold(0.0_f32, |peak, s| peak.max(s.abs()));
+        assert!(peak > 0.99, "{peak}");
+    }
+
+    #[test]
+    fn lfo_modulates_the_filter_cutoff_per_voice() {
+        let closed = super::FilterSettings {
+            cutoff_hz: 100.0,
+            ..Default::default()
+        };
+        let mut steady = modulated_engine(super::LfoMode::Trigger, &[]);
+        steady.set_filter_settings(closed);
+        note_on(&mut steady, 69);
+        let steady = render(&mut steady, 4_800);
+
+        // Five octaves up while the LFO is high.
+        let octaves = (20_000.0_f32 / 20.0).log2();
+        let mut opened = modulated_engine(
+            super::LfoMode::Trigger,
+            &[route(ModDestination::FilterCutoff, 5.0 / octaves)],
+        );
+        opened.set_filter_settings(closed);
+        note_on(&mut opened, 69);
+        let opened = render(&mut opened, 4_800);
+        assert!(rms(&opened) > rms(&steady) * 4.0);
+    }
+
+    #[test]
+    fn trigger_mode_restarts_modulation_per_note_and_sync_does_not() {
+        let level_route = [route(ModDestination::OscLevel, -1.0)];
+        // Trigger: each note starts at the top of its own LFO cycle, muted
+        // for half a second, no matter when it's played.
+        let mut engine = modulated_engine(super::LfoMode::Trigger, &level_route);
+        note_on(&mut engine, 60);
+        render(&mut engine, 30_000);
+        note_on(&mut engine, 67);
+        let samples = render(&mut engine, 12_000);
+        assert!(samples.iter().any(|&sample| sample != 0.0));
+        // Note 60 is in its loud half; note 67 should still be silent, so the
+        // output is note 60 alone.
+        let mut alone = modulated_engine(super::LfoMode::Trigger, &level_route);
+        note_on(&mut alone, 60);
+        render(&mut alone, 30_000);
+        assert_eq!(render(&mut alone, 12_000), samples);
+
+        // Sync: the shared LFO is already in its loud half, so a new note
+        // sounds immediately.
+        let mut engine = modulated_engine(super::LfoMode::Sync, &level_route);
+        render(&mut engine, 30_000);
+        note_on(&mut engine, 67);
+        let samples = render(&mut engine, 4_800);
+        assert!(rms(&samples) > 0.5, "{}", rms(&samples));
     }
 }

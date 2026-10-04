@@ -5,7 +5,8 @@
 Synthol is currently a small Truce instrument: MIDI drives up to eight
 oscillator voices (sine, square, triangle, or sawtooth) through a 12 dB/octave
 filter, and a Slint editor controls output gain, the oscillator waveform, the
-filter, the output envelope, and the polyphony limit. The intended product is a modular synthesizer where users
+filter, the output envelope, an LFO that can modulate oscillator pitch and
+level and filter cutoff and Q, and the polyphony limit. The intended product is a modular synthesizer where users
 can add and connect oscillators, envelopes, LFOs, filters, effects, and other
 modules.
 
@@ -23,11 +24,15 @@ construction compiles a fixed typed oscillator-to-filter-to-output-envelope-to-o
 graph once; processing follows
 its prepared order without compiling or allocating in the audio callback.
 Output gain is applied after the envelope. The filter (`engine/node/filter.rs`)
-is an RBJ-cookbook biquad in low-pass, high-pass, or band-pass mode. The engine
-computes its coefficients once from the smoothed host parameters, only when
-they change, and shares them with every voice; each voice keeps its own
-filter state, cleared when the voice goes silent. The editor's response plot
-evaluates the same coefficients' magnitude response. This fixed graph is an internal
+is an RBJ-cookbook biquad in low-pass, high-pass, or band-pass mode. Because
+LFO modulation can move cutoff and Q per note, each voice owns a `Filter` that
+recomputes its coefficients only when its modulated settings change, plus its
+own filter state, cleared when the voice goes silent. The editor's response
+plot evaluates the same coefficients' magnitude response for the unmodulated
+settings. Each voice owns an LFO (`engine/node/lfo.rs`), and the engine owns
+one more shared, free-running LFO for Sync mode; `engine/modulation.rs` routes
+them to destinations. See "MIDI, notes, voices, and
+modulation" below. This fixed graph is an internal
 representation only: it is not user-editable or serialized, and graph
 publication, patch persistence, additional node types, and a patching UI are
 future work. This keeps the current instrument's behavior unchanged while
@@ -200,6 +205,47 @@ renders a `Waveform` (sine, PolyBLEP square, triangle, or PolyBLEP sawtooth).
 The host-visible `Oscillator` enum parameter is mapped to the engine `Waveform` once per block
 and applied to every voice; switching takes effect immediately, including on
 sounding notes, without resetting phase.
+
+The oscillator also has a pitch offset in semitones (cached as a frequency
+ratio) and a 0-1 output level, applied per sample from the smoothed `Osc Pitch`
+and `Osc Level` parameters.
+
+The `Lfo` node (`engine/node/lfo.rs`) reuses the oscillator's waveform
+functions without PolyBLEP and has no mode logic of its own. Its phase is kept
+in `f64` because at 0.01 Hz the per-sample increment is below `f32`
+resolution. Each voice owns one: the voice's note-on (including retrigger and
+voice stealing) restarts it at phase 0, and it stops when the voice goes
+silent, so notes have independent LFOs. `SynthEngine` also owns a shared
+`sync_lfo` that free-runs while the mode is `Sync`. The engine's
+`lfo_positions()` reports what to display: in `Trigger`, each sounding voice's
+phase plus the most recently started voice; in `Sync`, only the shared LFO.
+The `LFO Shape`, `LFO Rate`, and `LFO Mode` parameters are read once per
+block. After each block the plugin publishes the positions through Truce
+meter slots `lfo_position_0` to `lfo_position_7` (encoded as `1 + phase`, with
+`0` meaning stopped, because unwritten meters read `0`) and `lfo_newest`
+(slot index plus one). The editor's per-frame sync decodes them into
+`PositionMarker` rows: solid for the newest note and faint for the others.
+Meter slots are display-only and not saved with presets.
+
+Modulation (`engine/modulation.rs`) works in normalized knob space. Each
+`ModDestination` (oscillator pitch and level, filter cutoff and Q) maps its
+value to and from 0-1 along the same taper as its host parameter: linear for
+pitch and level, logarithmic for cutoff and Q. The plugin exposes `MOD_SLOTS`
+(4) routing slots as `LFO Route N Destination` and `LFO Route N Amount`
+parameters. Every sample, `SynthEngine::set_modulation` sums the slots' bipolar
+amounts per destination into `ModDepths`, and the engine passes the base
+settings, depths, and (in Sync mode) the shared LFO's value to each voice as
+`VoiceControls`. A voice advances its own LFO first, then offsets each
+destination's normalized value by `depth * lfo` and clamps it to the range. A
+zero offset leaves a value bit-for-bit unchanged, so unrouted settings cost
+nothing extra and sound the same as before. Voice LFOs keep running in Sync
+mode for display, but only the shared value modulates.
+
+The editor reads the routing parameters each frame. It draws each routed
+knob's depth arc and, from the newest LFO position, its live modulated value.
+Dropping the drag handle on a knob fills the first empty slot unless that
+destination is already routed. Alt-dragging a knob sets the total depth on
+that destination by adjusting the first slot that targets it.
 
 ## Parameters and host integration
 

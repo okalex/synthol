@@ -11,6 +11,8 @@ pub enum Waveform {
     Sawtooth,
 }
 
+const MAX_INCREMENT: f32 = 0.49;
+
 #[derive(Debug)]
 pub struct Oscillator {
     sample_rate: f32,
@@ -20,6 +22,11 @@ pub struct Oscillator {
     start_phase: f32,
     frequency: f32,
     amplitude: f32,
+    /// Transposition in semitones and the frequency ratio it gives.
+    pitch_semitones: f32,
+    pitch_ratio: f32,
+    /// Output gain, 0 to 1.
+    level: f32,
     waveform: Waveform,
     active_note: Option<u8>,
 }
@@ -32,6 +39,9 @@ impl Default for Oscillator {
             start_phase: 0.0,
             frequency: 0.0,
             amplitude: 0.0,
+            pitch_semitones: 0.0,
+            pitch_ratio: 1.0,
+            level: 1.0,
             waveform: Waveform::default(),
             active_note: None,
         }
@@ -57,6 +67,28 @@ impl Oscillator {
         self.start_phase = wrap_phase(phase);
     }
 
+    /// Transpose by `semitones`; applies to sounding notes immediately.
+    pub fn set_pitch(&mut self, semitones: f32) {
+        let semitones = if semitones.is_finite() {
+            semitones
+        } else {
+            0.0
+        };
+        if semitones != self.pitch_semitones {
+            self.pitch_semitones = semitones;
+            self.pitch_ratio = (semitones / 12.0).exp2();
+        }
+    }
+
+    /// Set the output gain (`0.0..=1.0`).
+    pub fn set_level(&mut self, level: f32) {
+        self.level = if level.is_finite() {
+            level.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+    }
+
     pub fn handle_event(&mut self, event: MidiEvent) {
         match event {
             MidiEvent::NoteOn { note, velocity } if velocity > 0 => {
@@ -78,8 +110,10 @@ impl Oscillator {
             return 0.0;
         }
 
-        let increment = self.frequency / self.sample_rate;
-        let output = waveform_sample(self.waveform, self.phase, increment) * self.amplitude;
+        // Keep transposed notes below Nyquist.
+        let increment = (self.frequency * self.pitch_ratio / self.sample_rate).min(MAX_INCREMENT);
+        let output =
+            waveform_sample(self.waveform, self.phase, increment) * self.amplitude * self.level;
         self.phase = (self.phase + increment).fract();
         output
     }
@@ -122,6 +156,12 @@ fn wrap_phase(phase: f32) -> f32 {
     } else {
         0.0
     }
+}
+
+/// One sample of `waveform` at normalized `phase` without band-limiting, for
+/// sub-audio sources such as LFOs where hard edges are intended.
+pub(crate) fn naive_waveform_sample(waveform: Waveform, phase: f32) -> f32 {
+    waveform_sample(waveform, phase, 0.0)
 }
 
 /// One sample of `waveform` at normalized `phase`. Every shape is zero and
@@ -396,5 +436,44 @@ mod tests {
         assert_ne!(render(Waveform::Sawtooth), render(Waveform::Sine));
         assert_ne!(render(Waveform::Sawtooth), render(Waveform::Square));
         assert_ne!(render(Waveform::Sawtooth), render(Waveform::Triangle));
+    }
+
+    fn sine_note(pitch: f32, level: f32) -> Vec<f32> {
+        let mut oscillator = Oscillator::default();
+        oscillator.reset(48_000.0);
+        oscillator.set_waveform(Waveform::Sine);
+        oscillator.set_pitch(pitch);
+        oscillator.set_level(level);
+        oscillator.handle_event(MidiEvent::NoteOn {
+            note: 69,
+            velocity: 127,
+        });
+        (0..4_800).map(|_| oscillator.next_sample()).collect()
+    }
+
+    fn rising_zero_crossings(samples: &[f32]) -> usize {
+        samples
+            .windows(2)
+            .filter(|pair| pair[0] < 0.0 && pair[1] >= 0.0)
+            .count()
+    }
+
+    #[test]
+    fn pitch_transposes_by_semitones() {
+        // 0.1 s of A4 (440 Hz) has 44 cycles; an octave up has 88, a fifth
+        // down (293.66 Hz) has 29.
+        assert_eq!(rising_zero_crossings(&sine_note(0.0, 1.0)), 43);
+        assert_eq!(rising_zero_crossings(&sine_note(12.0, 1.0)), 87);
+        assert_eq!(rising_zero_crossings(&sine_note(-7.0, 1.0)), 29);
+    }
+
+    #[test]
+    fn level_scales_the_output() {
+        let full = sine_note(0.0, 1.0);
+        let quarter = sine_note(0.0, 0.25);
+        for (full, quarter) in full.iter().zip(&quarter) {
+            assert!((full * 0.25 - quarter).abs() < 1e-6);
+        }
+        assert!(sine_note(0.0, 0.0).iter().all(|&s| s == 0.0));
     }
 }

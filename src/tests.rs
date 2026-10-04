@@ -374,3 +374,219 @@ fn filter_parameters_shape_the_oscillator_output() {
         "band pass RMS was {band_passed} of {open}"
     );
 }
+
+#[test]
+fn lfo_shape_and_mode_parameters_list_their_options() {
+    use crate::plugin::{LfoModeType, LfoShapeType, SynthParams, SynthParamsParamId};
+    use truce::prelude::*;
+
+    let params = SynthParams::default();
+    assert_eq!(params.lfo_shape.index(), 0);
+    assert_eq!(
+        LfoShapeType::variant_names(),
+        ["Sine", "Square", "Triangle", "Sawtooth"]
+    );
+    for index in 0..4 {
+        params.set_normalized(SynthParamsParamId::LfoShape.into(), index as f64 / 3.0);
+        assert_eq!(params.lfo_shape.index(), index);
+    }
+
+    assert_eq!(params.lfo_mode.index(), 0);
+    assert_eq!(LfoModeType::variant_names(), ["Trigger", "Sync"]);
+    params.set_normalized(SynthParamsParamId::LfoMode.into(), 1.0);
+    assert_eq!(params.lfo_mode.index(), 1);
+}
+
+#[test]
+fn lfo_rate_spans_a_hundredth_of_a_hertz_to_thirty_hertz() {
+    use crate::plugin::{SynthParams, SynthParamsParamId};
+    use truce::prelude::*;
+
+    let params = SynthParams::default();
+    let id: u32 = SynthParamsParamId::LfoRate.into();
+    assert_eq!(params.get_plain(id), Some(1.0));
+    params.set_normalized(id, 0.0);
+    assert!((params.get_plain(id).unwrap() - 0.01).abs() < 1e-9);
+    params.set_normalized(id, 1.0);
+    assert!((params.get_plain(id).unwrap() - 30.0).abs() < 1e-6);
+
+    for (value, text) in [(0.01, "0.01 Hz"), (2.5, "2.5 Hz"), (30.0, "30 Hz")] {
+        assert_eq!(params.format_value(id, value).as_deref(), Some(text));
+    }
+}
+
+#[test]
+fn an_unrouted_lfo_does_not_affect_the_sound() {
+    use crate::plugin::SynthParamsParamId;
+    use std::time::Duration;
+    use truce_test::driver;
+
+    let render = |shape: f64, rate: f64, mode: f64| {
+        driver!(Plugin)
+            .duration(Duration::from_millis(50))
+            .set_param(SynthParamsParamId::LfoShape, shape)
+            .set_param(SynthParamsParamId::LfoRate, rate)
+            .set_param(SynthParamsParamId::LfoMode, mode)
+            .script(|script| script.note_on(57, 1.0))
+            .run()
+            .output[0]
+            .clone()
+    };
+
+    let reference = render(0.0, 0.5, 0.0);
+    assert_eq!(render(1.0, 1.0, 0.0), reference);
+    assert_eq!(render(1.0 / 3.0, 0.0, 1.0), reference);
+}
+
+#[test]
+fn lfo_meters_round_trip_positions_and_newest_slot() {
+    use crate::plugin::{
+        decode_lfo_newest, decode_lfo_position, encode_lfo_newest, encode_lfo_position,
+    };
+
+    // A meter that was never written reads 0.0, which must mean "stopped".
+    assert_eq!(decode_lfo_position(0.0), None);
+    assert_eq!(decode_lfo_newest(0.0), None);
+    assert_eq!(decode_lfo_position(encode_lfo_position(None)), None);
+    assert_eq!(decode_lfo_newest(encode_lfo_newest(None)), None);
+
+    for phase in [0.0, 0.25, 0.999] {
+        let decoded = decode_lfo_position(encode_lfo_position(Some(phase))).unwrap();
+        assert!((decoded - phase).abs() < 1.0e-6);
+    }
+    for slot in 0..crate::engine::MAX_VOICES {
+        assert_eq!(decode_lfo_newest(encode_lfo_newest(Some(slot))), Some(slot));
+    }
+}
+
+#[test]
+fn modulation_ranges_match_the_destination_parameters() {
+    use crate::engine::ModDestination;
+    use crate::plugin::{SynthParams, SynthParamsParamId};
+    use truce::prelude::*;
+
+    // Route depths are fractions of each knob's range, so the engine's
+    // mapping must agree with the parameter's.
+    let params = SynthParams::default();
+    let destinations = [
+        (ModDestination::OscPitch, SynthParamsParamId::OscPitch, 1.0),
+        (
+            ModDestination::OscLevel,
+            SynthParamsParamId::OscLevel,
+            100.0,
+        ),
+        (
+            ModDestination::FilterCutoff,
+            SynthParamsParamId::FilterCutoff,
+            1.0,
+        ),
+        (ModDestination::FilterQ, SynthParamsParamId::FilterQ, 1.0),
+    ];
+    for (destination, id, scale) in destinations {
+        let id: u32 = id.into();
+        for normalized in [0.0, 0.3, 0.5, 0.8, 1.0] {
+            params.set_normalized(id, normalized);
+            let plain = params.get_plain(id).unwrap() / scale;
+            let engine = f64::from(destination.denormalize(normalized as f32));
+            assert!(
+                (plain - engine).abs() <= plain.abs() * 1e-4 + 1e-4,
+                "{destination:?} at {normalized}: param {plain}, engine {engine}"
+            );
+        }
+    }
+}
+
+#[test]
+fn oscillator_pitch_and_level_parameters() {
+    use crate::plugin::{SynthParams, SynthParamsParamId};
+    use std::time::Duration;
+    use truce::prelude::*;
+    use truce_test::{assertions, driver};
+
+    let params = SynthParams::default();
+    let pitch: u32 = SynthParamsParamId::OscPitch.into();
+    let level: u32 = SynthParamsParamId::OscLevel.into();
+    assert_eq!(params.get_plain(pitch), Some(0.0));
+    assert_eq!(params.get_plain(level), Some(100.0));
+    assert_eq!(params.format_value(pitch, 0.0).as_deref(), Some("+0.00 st"));
+    assert_eq!(
+        params.format_value(pitch, -7.0).as_deref(),
+        Some("-7.00 st")
+    );
+    assert_eq!(params.format_value(level, 100.0).as_deref(), Some("100 %"));
+    let amount: u32 = SynthParamsParamId::Mod1Amount.into();
+    assert_eq!(params.format_value(amount, -40.0).as_deref(), Some("-40 %"));
+
+    let muted = driver!(Plugin)
+        .duration(Duration::from_millis(50))
+        .set_param(SynthParamsParamId::OscLevel, 0.0)
+        .script(|script| script.note_on(57, 1.0))
+        .run();
+    assertions::assert_silence(&muted);
+}
+
+#[test]
+fn routing_slots_list_each_destination() {
+    use crate::engine::ModDestination;
+    use crate::plugin::{
+        MOD_AMOUNT_PARAMS, MOD_DESTINATION_PARAMS, ModDestinationType, SynthParams,
+        mod_destination_from_index, mod_destination_index,
+    };
+    use truce::prelude::*;
+
+    assert_eq!(
+        ModDestinationType::variant_names(),
+        [
+            "None",
+            "Osc Pitch",
+            "Osc Level",
+            "Filter Cutoff",
+            "Filter Q"
+        ]
+    );
+    assert_eq!(mod_destination_from_index(0), None);
+    for destination in ModDestination::ALL {
+        let index = mod_destination_index(Some(destination));
+        assert_eq!(mod_destination_from_index(index), Some(destination));
+    }
+
+    let params = SynthParams::default();
+    for (destination, amount) in MOD_DESTINATION_PARAMS.into_iter().zip(MOD_AMOUNT_PARAMS) {
+        assert_eq!(params.get_plain(destination.into()), Some(0.0));
+        assert_eq!(params.get_plain(amount.into()), Some(0.0));
+        params.set_normalized(amount.into(), 0.0);
+        assert_eq!(params.get_plain(amount.into()), Some(-100.0));
+    }
+}
+
+#[test]
+fn a_routed_lfo_modulates_the_sound() {
+    use crate::plugin::SynthParamsParamId;
+    use std::time::Duration;
+    use truce_test::driver;
+
+    // A 20 Hz LFO on the oscillator level.
+    let render = |destination: f64, amount: f64| {
+        driver!(Plugin)
+            .duration(Duration::from_millis(100))
+            .set_param(SynthParamsParamId::Attack, 0.0)
+            .set_param(SynthParamsParamId::LfoRate, 0.9)
+            .set_param(SynthParamsParamId::Mod2Destination, destination)
+            .set_param(SynthParamsParamId::Mod2Amount, amount)
+            .script(|script| script.note_on(57, 1.0))
+            .run()
+            .output[0]
+            .clone()
+    };
+    let osc_level = 0.5;
+    // Amounts are normalized: 0.5 is 0 %, 0.0 is -100 %.
+    let reference = render(0.0, 0.5);
+    // A routed slot with no depth, or depth with no destination, is inert.
+    assert_eq!(render(osc_level, 0.5), reference);
+    assert_eq!(render(0.0, 0.0), reference);
+
+    let modulated = render(osc_level, 0.0);
+    assert_ne!(modulated, reference);
+    let energy = |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>();
+    assert!(energy(&modulated) < energy(&reference) * 0.8);
+}

@@ -1,4 +1,6 @@
-import { FilterResponseDisplay, AdsrEnvelopePanel, Dropdown, SynthKnob, WaveformDisplay } from "controls.slint";
+import { FilterResponseDisplay, AdsrEnvelopePanel, Dropdown, KnobModulation, ModDragHandle, ModRouteRow, ModRouteSlot, PositionMarker, SynthKnob, WaveformDisplay } from "controls.slint";
+
+export { KnobModulation, ModRouteSlot, PositionMarker }
 
 import "JetBrainsMono-Regular.ttf";
 
@@ -116,6 +118,13 @@ export component SynthUi inherits Window {
     callback phase-changed(float);
     callback phase-released();
     pure callback oscillator-cycle-path(int, float, float, float) -> string;
+    in-out property <float> osc-pitch: 0.5;
+    in-out property <string> osc-pitch-text: "+0.00 st";
+    in-out property <float> osc-level: 1.0;
+    in-out property <string> osc-level-text: "100 %";
+    // Parameter id 0 is pitch, 1 is level.
+    callback osc-changed(int, float);
+    callback osc-released(int);
     in-out property <int> filter-type: 0;
     in-out property <float> filter-cutoff: 1.0;
     in-out property <string> filter-cutoff-text: "20.0 kHz";
@@ -126,10 +135,34 @@ export component SynthUi inherits Window {
     callback filter-changed(int, float);
     callback filter-released(int);
     pure callback filter-response-path(int, float, float, float, float) -> string;
+    in-out property <int> lfo-shape: 0;
+    in-out property <float> lfo-rate: 0.575;
+    in-out property <string> lfo-rate-text: "1.0 Hz";
+    in-out property <int> lfo-mode: 0;
+    // One marker per voice slot; see `lfo_markers` in editor.rs.
+    in-out property <[PositionMarker]> lfo-markers;
+    callback lfo-shape-selected(int);
+    callback lfo-rate-changed(float);
+    callback lfo-rate-released();
+    callback lfo-mode-selected(int);
+    pure callback lfo-cycle-path(int, float, float) -> string;
+    // LFO routing. Destination indices: 0 pitch, 1 level, 2 cutoff, 3 Q.
+    // Routing slot destinations add 1, with 0 meaning None.
+    in property <[string]> mod-destinations: ["None", "Osc Pitch", "Osc Level", "Filter Cutoff", "Filter Q"];
+    in-out property <[ModRouteSlot]> mod-slots;
+    // Per destination; see `knob_modulation` in editor.rs.
+    in-out property <[KnobModulation]> knob-mods;
+    callback mod-assign(int);
+    callback mod-destination-selected(int, int);
+    callback mod-amount-changed(int, float);
+    callback mod-amount-released(int);
+    callback mod-remove(int);
+    callback mod-depth-changed(int, float);
+    callback mod-depth-released(int);
 
     title: "Synthol";
     preferred-width: 720px;
-    preferred-height: 780px;
+    preferred-height: 1010px;
     background: #17191f;
     default-font-family: "JetBrains Mono";
 
@@ -174,6 +207,25 @@ export component SynthUi inherits Window {
                     changed(value) => { root.gain-changed(value); }
                     released => { root.gain-released(); }
                 }
+
+                Text {
+                    text: "VOICES";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: #9299a8;
+                    vertical-alignment: center;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+
+                    Dropdown {
+                        width: 72px;
+                        options: ["Mono", "2", "3", "4", "5", "6", "7", "8"];
+                        selected-index: root.voices - 1;
+                        selected(index) => { root.voices-selected(index + 1); }
+                    }
+                }
             }
 
             HorizontalLayout {
@@ -202,6 +254,7 @@ export component SynthUi inherits Window {
                     alignment: center;
 
                     WaveformDisplay {
+                        width: 180px;
                         waveform: root.oscillator;
                         phase: root.phase;
                         cycle-path(waveform, phase, width, height) => {
@@ -218,25 +271,36 @@ export component SynthUi inherits Window {
                     released(_) => { root.phase-released(); }
                 }
 
-                Rectangle { width: 16px; }
-
-                Text {
-                    text: "VOICES";
-                    font-size: 10px;
-                    font-weight: 700;
-                    color: #9299a8;
-                    vertical-alignment: center;
+                pitch-knob := SynthKnob {
+                    value <=> root.osc-pitch;
+                    label: "PITCH";
+                    parameter-id: 0;
+                    value-text: root.osc-pitch-text;
+                    mod-target: 0;
+                    modulation: root.knob-mods[0];
+                    mod-drag-active: mod-handle.dragging;
+                    mod-drag-x: mod-handle.pointer-x;
+                    mod-drag-y: mod-handle.pointer-y;
+                    changed(id, value) => { root.osc-changed(id, value); }
+                    released(id) => { root.osc-released(id); }
+                    mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                    mod-depth-released(target) => { root.mod-depth-released(target); }
                 }
 
-                VerticalLayout {
-                    alignment: center;
-
-                    Dropdown {
-                        width: 72px;
-                        options: ["Mono", "2", "3", "4", "5", "6", "7", "8"];
-                        selected-index: root.voices - 1;
-                        selected(index) => { root.voices-selected(index + 1); }
-                    }
+                level-knob := SynthKnob {
+                    value <=> root.osc-level;
+                    label: "LEVEL";
+                    parameter-id: 1;
+                    value-text: root.osc-level-text;
+                    mod-target: 1;
+                    modulation: root.knob-mods[1];
+                    mod-drag-active: mod-handle.dragging;
+                    mod-drag-x: mod-handle.pointer-x;
+                    mod-drag-y: mod-handle.pointer-y;
+                    changed(id, value) => { root.osc-changed(id, value); }
+                    released(id) => { root.osc-released(id); }
+                    mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                    mod-depth-released(target) => { root.mod-depth-released(target); }
                 }
             }
 
@@ -275,22 +339,153 @@ export component SynthUi inherits Window {
                     }
                 }
 
-                SynthKnob {
+                cutoff-knob := SynthKnob {
                     value <=> root.filter-cutoff;
                     label: "CUTOFF";
                     parameter-id: 0;
                     value-text: root.filter-cutoff-text;
+                    mod-target: 2;
+                    modulation: root.knob-mods[2];
+                    mod-drag-active: mod-handle.dragging;
+                    mod-drag-x: mod-handle.pointer-x;
+                    mod-drag-y: mod-handle.pointer-y;
                     changed(id, value) => { root.filter-changed(id, value); }
                     released(id) => { root.filter-released(id); }
+                    mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                    mod-depth-released(target) => { root.mod-depth-released(target); }
                 }
 
-                SynthKnob {
+                q-knob := SynthKnob {
                     value <=> root.filter-q;
                     label: "Q";
                     parameter-id: 1;
                     value-text: root.filter-q-text;
+                    mod-target: 3;
+                    modulation: root.knob-mods[3];
+                    mod-drag-active: mod-handle.dragging;
+                    mod-drag-x: mod-handle.pointer-x;
+                    mod-drag-y: mod-handle.pointer-y;
                     changed(id, value) => { root.filter-changed(id, value); }
                     released(id) => { root.filter-released(id); }
+                    mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                    mod-depth-released(target) => { root.mod-depth-released(target); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+
+                Text {
+                    text: "LFO";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: #9299a8;
+                    vertical-alignment: center;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+
+                    Dropdown {
+                        options: ["Sine", "Square", "Triangle", "Sawtooth"];
+                        selected-index: root.lfo-shape;
+                        selected(index) => { root.lfo-shape-selected(index); }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+
+                    WaveformDisplay {
+                        waveform: root.lfo-shape;
+                        markers: root.lfo-markers;
+                        cycle-path(waveform, _, width, height) => {
+                            return root.lfo-cycle-path(waveform, width, height);
+                        }
+                    }
+                }
+
+                SynthKnob {
+                    value <=> root.lfo-rate;
+                    label: "RATE";
+                    value-text: root.lfo-rate-text;
+                    changed(_, value) => { root.lfo-rate-changed(value); }
+                    released(_) => { root.lfo-rate-released(); }
+                }
+
+                Rectangle { width: 16px; }
+
+                Text {
+                    text: "MODE";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: #9299a8;
+                    vertical-alignment: center;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+
+                    Dropdown {
+                        width: 88px;
+                        options: ["Trigger", "Sync"];
+                        selected-index: root.lfo-mode;
+                        selected(index) => { root.lfo-mode-selected(index); }
+                    }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 8px;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+
+                    Text {
+                        text: "LFO ROUTING";
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: #9299a8;
+                        vertical-alignment: center;
+                    }
+
+                    mod-handle := ModDragHandle {
+                        dropped => {
+                            if pitch-knob.mod-drop-hover {
+                                root.mod-assign(0);
+                            } else if level-knob.mod-drop-hover {
+                                root.mod-assign(1);
+                            } else if cutoff-knob.mod-drop-hover {
+                                root.mod-assign(2);
+                            } else if q-knob.mod-drop-hover {
+                                root.mod-assign(3);
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Drag onto PITCH, LEVEL, CUTOFF or Q · Alt-drag a knob to set depth · Shift for fine";
+                        font-size: 9px;
+                        color: #6f7685;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    height: 62px;
+
+                    for slot[index] in root.mod-slots: ModRouteRow {
+                        x: (parent.width - 672px) / 2 + mod(index, 2) * 342px;
+                        y: floor(index / 2) * 34px;
+                        slot: slot;
+                        destinations: root.mod-destinations;
+                        destination-selected(destination) => { root.mod-destination-selected(index, destination); }
+                        amount-changed(amount) => { root.mod-amount-changed(index, amount); }
+                        amount-released => { root.mod-amount-released(index); }
+                        remove => { root.mod-remove(index); }
+                    }
                 }
             }
 
@@ -312,5 +507,19 @@ export component SynthUi inherits Window {
                 released(id) => { root.envelope-released(id); }
             }
         }
+    }
+
+    // Follows the pointer while the LFO is dragged onto a knob; drawn last so
+    // it sits above everything.
+    if mod-handle.dragging: Rectangle {
+        x: mod-handle.pointer-x - 7px;
+        y: mod-handle.pointer-y - 7px;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: #f2b84d;
+        border-width: 2px;
+        border-color: #ffe2a8;
+        opacity: 0.85;
     }
 }

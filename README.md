@@ -17,7 +17,10 @@ are band-limited with PolyBLEP; the triangle is generated directly and has
 some mild aliasing at high pitches. Square is full-scale, so it sounds louder
 than the other shapes. A **Phase** knob (0° to 360°, also host-automatable)
 sets where in the cycle each new note starts; sounding notes are unaffected.
-Phases other than 0° start mid-cycle, so short attacks may click. Next to the
+Phases other than 0° start mid-cycle, so short attacks may click. A **Pitch**
+knob transposes the oscillator by ±24 semitones and a **Level** knob (0% to
+100%) sets its volume before the filter; both are host-automatable and
+smoothed. Next to the
 dropdown, a waveform display plots one cycle (0° to 360°) of the selected
 shape as it plays from the chosen start phase, updating live while the knob
 turns. It is computed from the oscillator's own sample function rather than
@@ -35,10 +38,43 @@ axis, computed from the same coefficients the DSP uses and updating live as
 the controls move. The editor doesn't know the host sample rate, so the plot
 assumes 48 kHz; near Nyquist the real response can differ slightly.
 
-The synth has no modulation or effects yet. The Slint editor
+The **LFO** row controls a low-frequency oscillator. A dropdown selects its shape (sine, square, triangle, or sawtooth, without
+band-limiting), a **Rate** knob sets 0.01 Hz to 30 Hz on a log taper, and a
+**Mode** dropdown selects **Trigger** or **Sync**; all three are
+host-automatable. In Trigger mode every note gets its own LFO, which starts
+from 0° when that note is pressed and stops when that note's release ends, so
+a note played later starts a fresh cycle while earlier notes' LFOs keep
+running. In Sync mode a single shared LFO runs continuously and ignores notes.
+A plot shows one cycle of the shape. Vertical lines mark the current
+positions, updated every editor frame from the audio thread: the most
+recently pressed note's line is solid and older notes' lines are faint (up to
+one per voice). Because the position comes from audio processing, a
+Sync LFO only advances while the host is processing the plugin.
+
+The LFO can modulate oscillator **Pitch** and **Level** and filter **Cutoff**
+and **Q**. Drag the amber **MOD** handle from the LFO Routing row onto one of
+those knobs (they light up while you drag) to route the LFO to it. A routed
+knob shows an amber arc: the faint arc covers the full swing around the knob's
+value, the bright arc shows the direction and depth of a positive LFO peak,
+and while a note plays a dot shows the current modulated value. Alt-drag a
+routed knob up or down to change the depth without touching the knob's value;
+hold Shift for fine control. The routing list below the handle shows the four
+routing slots, each a host-automatable **Destination** and bipolar **Amount**
+(-100% to 100% of the destination's knob range). Each slot has a destination
+dropdown, an amount slider (Shift-drag for fine control, double-click to reset),
+the depth in the destination's units, and a × button that clears the slot. A
+new route starts at a modest depth: 1 semitone, 25% level, 1 octave of cutoff,
+or ×2 Q. The amounts are measured along each knob's own taper, so pitch moves
+in semitones, cutoff in octaves, and Q multiplicatively (shown as ×/÷).
+Modulated values stay within each knob's range, and several slots targeting the
+same destination add up. Every note is modulated by its own LFO in Trigger mode
+and by the shared LFO in Sync mode, and each voice has its own filter, so
+modulating the cutoff doesn't affect other notes.
+
+The synth has no effects yet. The Slint editor
 currently provides a reusable ADSR graph/knob panel for the output envelope,
-an output-gain slider, a voice-count dropdown, and the oscillator and filter
-controls. Attack, decay, and release each range from 0 ms to 10 s
+an output-gain slider, a voice-count dropdown, and the oscillator, filter, and
+LFO controls. Attack, decay, and release each range from 0 ms to 10 s
 on a skewed taper that gives short times more of the knob. The controls use
 Slint's software renderer and are drag-only. The editor passes every keyboard
 event back to the host, so Ableton's computer MIDI keyboard remains available

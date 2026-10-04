@@ -118,7 +118,7 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }
 }
 
-/// Filter design shared by every voice: the current settings and the
+/// A filter design: the current settings and the
 /// coefficients prepared for them. Coefficients are recomputed only when the
 /// settings or sample rate change.
 #[derive(Debug)]
@@ -268,7 +268,8 @@ mod tests {
             settings(FilterMode::BandPass, 800.0, 4.0),
         ] {
             for frequency in [200.0, 800.0, 3_000.0] {
-                let expected = BiquadCoefficients::new(s, SAMPLE_RATE).magnitude(frequency, SAMPLE_RATE);
+                let expected =
+                    BiquadCoefficients::new(s, SAMPLE_RATE).magnitude(frequency, SAMPLE_RATE);
                 let actual = measured_gain(s, frequency);
                 assert!(
                     (actual - expected).abs() < 0.01 * expected.max(0.01),
@@ -281,8 +282,10 @@ mod tests {
     #[test]
     fn out_of_range_settings_are_clamped() {
         let clamped = BiquadCoefficients::new(settings(FilterMode::LowPass, 1.0, 0.0), SAMPLE_RATE);
-        let minimum =
-            BiquadCoefficients::new(settings(FilterMode::LowPass, MIN_CUTOFF_HZ, MIN_Q), SAMPLE_RATE);
+        let minimum = BiquadCoefficients::new(
+            settings(FilterMode::LowPass, MIN_CUTOFF_HZ, MIN_Q),
+            SAMPLE_RATE,
+        );
         assert_eq!(clamped, minimum);
 
         let invalid = BiquadCoefficients::new(
@@ -304,7 +307,10 @@ mod tests {
             let input = if index % 2 == 0 { 1.0 } else { -1.0 };
             assert!(state.process_sample(&coefficients, input).is_finite());
         }
-        assert_eq!(BiquadCoefficients::new(FilterSettings::default(), 0.0), BiquadCoefficients::default());
+        assert_eq!(
+            BiquadCoefficients::new(FilterSettings::default(), 0.0),
+            BiquadCoefficients::default()
+        );
     }
 
     #[test]
@@ -320,7 +326,8 @@ mod tests {
 
     #[test]
     fn reset_clears_filter_memory() {
-        let coefficients = BiquadCoefficients::new(settings(FilterMode::LowPass, 200.0, 4.0), SAMPLE_RATE);
+        let coefficients =
+            BiquadCoefficients::new(settings(FilterMode::LowPass, 200.0, 4.0), SAMPLE_RATE);
         let mut state = BiquadState::default();
         state.process_sample(&coefficients, 1.0);
         state.reset();

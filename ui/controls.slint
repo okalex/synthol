@@ -1,11 +1,70 @@
+// LFO modulation shown on a knob. `depth` is the summed route depth as a
+// fraction of the knob's range; `live` is the modulated position.
+export struct KnobModulation {
+    routed: bool,
+    depth: float,
+    live: float,
+    live-visible: bool,
+}
+
+// One arc segment around a knob, between normalized knob values `from` and
+// `to` on the same 300deg sweep as the indicator.
+component KnobArc inherits Path {
+    in property <float> from;
+    in property <float> to;
+    in property <float> radius: 26;
+    private property <angle> start-angle: 210deg + min(root.from, root.to) * 300deg;
+    private property <angle> end-angle: 210deg + max(root.from, root.to) * 300deg;
+
+    // Grown by one stroke width so the viewbox maps 1:1 onto the knob's
+    // pixels, as in WaveformDisplay.
+    x: -self.stroke-width / 2;
+    y: -self.stroke-width / 2;
+    width: 84px + self.stroke-width;
+    height: 84px + self.stroke-width;
+    viewbox-width: 84;
+    viewbox-height: 84;
+    stroke-width: 3px;
+    visible: abs(root.to - root.from) > 0.002;
+
+    MoveTo {
+        x: 42 + root.radius * sin(root.start-angle);
+        y: 40 - root.radius * cos(root.start-angle);
+    }
+
+    ArcTo {
+        x: 42 + root.radius * sin(root.end-angle);
+        y: 40 - root.radius * cos(root.end-angle);
+        radius-x: root.radius;
+        radius-y: root.radius;
+        large-arc: root.end-angle - root.start-angle > 180deg;
+        sweep: true;
+    }
+}
+
 export component SynthKnob inherits Rectangle {
     in-out property <float> value: 0.0;
     in property <string> label;
     in property <string> value-text;
     in property <int> parameter-id;
+    // LFO destination index this knob accepts drops for, or -1.
+    in property <int> mod-target: -1;
+    in property <KnobModulation> modulation;
+    // An LFO drag in progress and the pointer in window coordinates.
+    in property <bool> mod-drag-active;
+    in property <length> mod-drag-x;
+    in property <length> mod-drag-y;
+    out property <bool> mod-drop-hover: root.mod-target >= 0 && root.mod-drag-active
+        && root.mod-drag-x >= root.absolute-position.x
+        && root.mod-drag-x < root.absolute-position.x + root.width
+        && root.mod-drag-y >= root.absolute-position.y
+        && root.mod-drag-y < root.absolute-position.y + 80px;
     callback pressed(int);
     callback changed(int, float);
     callback released(int);
+    // Alt-drag on a routed knob edits its modulation depth (-1 to 1).
+    callback mod-depth-changed(int, float);
+    callback mod-depth-released(int);
 
     width: 84px;
     height: 112px;
@@ -21,6 +80,19 @@ export component SynthKnob inherits Rectangle {
         horizontal-alignment: center;
     }
 
+    // Drop-target ring while an LFO drag is in progress.
+    Rectangle {
+        x: 13px;
+        y: 11px;
+        width: 58px;
+        height: 58px;
+        border-radius: 29px;
+        border-width: root.mod-drop-hover ? 2px : 1px;
+        border-color: #f2b84d;
+        opacity: root.mod-drop-hover ? 1.0 : 0.4;
+        visible: root.mod-target >= 0 && root.mod-drag-active;
+    }
+
     Rectangle {
         x: 20px;
         y: 18px;
@@ -30,6 +102,30 @@ export component SynthKnob inherits Rectangle {
         background: #292d36;
         border-width: 1px;
         border-color: #424754;
+    }
+
+    // The full swing of the LFO (both directions), with the positive
+    // direction drawn brighter so the depth's sign is visible.
+    if root.modulation.routed: KnobArc {
+        from: clamp(root.value - root.modulation.depth, 0.0, 1.0);
+        to: clamp(root.value + root.modulation.depth, 0.0, 1.0);
+        stroke: #f2b84d;
+        opacity: 0.3;
+    }
+
+    if root.modulation.routed: KnobArc {
+        from: root.value;
+        to: clamp(root.value + root.modulation.depth, 0.0, 1.0);
+        stroke: #f2b84d;
+    }
+
+    if root.modulation.routed && root.modulation.live-visible: Rectangle {
+        x: 42px + 26px * sin(210deg + root.modulation.live * 300deg) - 3.5px;
+        y: 40px - 26px * cos(210deg + root.modulation.live * 300deg) - 3.5px;
+        width: 7px;
+        height: 7px;
+        border-radius: 3.5px;
+        background: #ffe2a8;
     }
 
     Rectangle {
@@ -58,24 +154,43 @@ export component SynthKnob inherits Rectangle {
         width: 60px;
         height: 60px;
         property <bool> gesture-active: false;
+        property <bool> depth-gesture: false;
         property <float> start-value: 0.0;
+        // Shift at press gives fine control.
+        property <length> sensitivity: 100px;
 
         moved => {
             if self.gesture-active {
-                root.value = clamp(self.start-value - (self.mouse-y - self.pressed-y) / 100px, 0.0, 1.0);
-                root.changed(root.parameter-id, root.value);
+                if self.depth-gesture {
+                    root.mod-depth-changed(
+                        root.mod-target,
+                        clamp(self.start-value - (self.mouse-y - self.pressed-y) / self.sensitivity, -1.0, 1.0));
+                } else {
+                    root.value = clamp(self.start-value - (self.mouse-y - self.pressed-y) / self.sensitivity, 0.0, 1.0);
+                    root.changed(root.parameter-id, root.value);
+                }
             }
         }
 
         pointer-event(event) => {
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                 self.gesture-active = true;
-                self.start-value = root.value;
-                root.pressed(root.parameter-id);
+                self.sensitivity = event.modifiers.shift ? 1000px : 100px;
+                self.depth-gesture = event.modifiers.alt && root.modulation.routed;
+                if self.depth-gesture {
+                    self.start-value = root.modulation.depth;
+                } else {
+                    self.start-value = root.value;
+                    root.pressed(root.parameter-id);
+                }
             } else if self.gesture-active
                     && (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
                 self.gesture-active = false;
-                root.released(root.parameter-id);
+                if self.depth-gesture {
+                    root.mod-depth-released(root.mod-target);
+                } else {
+                    root.released(root.parameter-id);
+                }
             }
         }
     }
@@ -441,9 +556,18 @@ export component AdsrEnvelopePanel inherits Rectangle {
 // callback (waveform, phase, width, height), which returns SVG path commands
 // in pixel coordinates for the given plot size, so new or morphed waveforms
 // need no UI changes.
+// A vertical line across a WaveformDisplay at `position` (0 to 1) through the
+// cycle. The newest marker is drawn solid and on top; others are faint.
+export struct PositionMarker {
+    position: float,
+    visible: bool,
+    newest: bool,
+}
+
 export component WaveformDisplay inherits Rectangle {
     in property <int> waveform: 0;
     in property <float> phase: 0.0;
+    in property <[PositionMarker]> markers;
     pure callback cycle-path(int, float, float, float) -> string;
 
     private property <length> plot-left: 10px;
@@ -488,6 +612,26 @@ export component WaveformDisplay inherits Rectangle {
         commands: root.cycle-path(root.waveform, root.phase, root.plot-width / 1px, root.plot-height / 1px);
         stroke: #56a7ff;
         stroke-width: 2px;
+    }
+
+    // Two passes so the newest marker is drawn over the faint ones.
+    for marker in root.markers: Rectangle {
+        visible: marker.visible && !marker.newest;
+        x: root.plot-left + root.plot-width * clamp(marker.position, 0.0, 1.0) - 1px;
+        y: root.plot-top;
+        width: 2px;
+        height: root.plot-height;
+        background: #f2b84d;
+        opacity: 0.35;
+    }
+
+    for marker in root.markers: Rectangle {
+        visible: marker.visible && marker.newest;
+        x: root.plot-left + root.plot-width * clamp(marker.position, 0.0, 1.0) - 1px;
+        y: root.plot-top;
+        width: 2px;
+        height: root.plot-height;
+        background: #f2b84d;
     }
 
     for label[index] in ["0°", "180°", "360°"]: Text {
@@ -645,6 +789,231 @@ export component Dropdown inherits Rectangle {
                 item-touch := TouchArea {
                     clicked => { root.selected(index); }
                 }
+            }
+        }
+    }
+}
+
+// One LFO routing slot as shown in the routing list.
+export struct ModRouteSlot {
+    // Index into the destination options; 0 is None.
+    destination: int,
+    // Normalized amount parameter: 0.5 is no modulation.
+    amount: float,
+    amount-text: string,
+}
+
+// Bipolar slider for a route's amount, drawn from the centre. Drags are
+// relative (Shift for fine control); double-click resets to zero.
+component BipolarSlider inherits Rectangle {
+    in property <float> value: 0.5;
+    in property <bool> enabled: true;
+    callback changed(float);
+    callback released();
+
+    height: 24px;
+    opacity: root.enabled ? 1.0 : 0.4;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: #343943;
+    }
+
+    Rectangle {
+        x: parent.width * min(root.value, 0.5);
+        y: (parent.height - self.height) / 2;
+        width: parent.width * abs(root.value - 0.5);
+        height: 4px;
+        background: #f2b84d;
+    }
+
+    Rectangle {
+        x: parent.width / 2 - 0.5px;
+        y: (parent.height - self.height) / 2;
+        width: 1px;
+        height: 10px;
+        background: #6f7685;
+    }
+
+    Rectangle {
+        x: parent.width * root.value - self.width / 2;
+        y: (parent.height - self.height) / 2;
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        background: #e8eaf0;
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        property <bool> gesture-active: false;
+        property <float> start-value: 0.5;
+        property <float> sensitivity: 1.0;
+
+        moved => {
+            if self.gesture-active {
+                root.changed(clamp(self.start-value + (self.mouse-x - self.pressed-x) / parent.width * self.sensitivity, 0.0, 1.0));
+            }
+        }
+
+        double-clicked => {
+            root.changed(0.5);
+            root.released();
+        }
+
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                self.gesture-active = true;
+                self.start-value = root.value;
+                self.sensitivity = event.modifiers.shift ? 0.1 : 1.0;
+            } else if self.gesture-active
+                    && (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                self.gesture-active = false;
+                root.released();
+            }
+        }
+    }
+}
+
+export component ModRouteRow inherits Rectangle {
+    in property <ModRouteSlot> slot;
+    in property <[string]> destinations;
+    callback destination-selected(int);
+    callback amount-changed(float);
+    callback amount-released();
+    callback remove();
+
+    private property <bool> routed: root.slot.destination > 0;
+
+    width: 330px;
+    height: 28px;
+    border-radius: 4px;
+    background: #1d2027;
+    border-width: 1px;
+    border-color: root.routed ? #4a4130 : #2a2e37;
+
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 8px;
+        alignment: start;
+
+        VerticalLayout {
+            alignment: center;
+
+            Dropdown {
+                width: 124px;
+                height: 20px;
+                options: root.destinations;
+                selected-index: root.slot.destination;
+                selected(index) => { root.destination-selected(index); }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            BipolarSlider {
+                width: 100px;
+                value: root.slot.amount;
+                enabled: root.routed;
+                changed(value) => { root.amount-changed(value); }
+                released => { root.amount-released(); }
+            }
+        }
+
+        Text {
+            width: 58px;
+            text: root.routed ? root.slot.amount-text : "";
+            font-size: 10px;
+            color: #f2b84d;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+        }
+
+        Rectangle {
+            width: 18px;
+            border-radius: 3px;
+            background: remove-touch.has-hover && root.routed ? #343943 : transparent;
+
+            Text {
+                text: "×";
+                font-size: 13px;
+                color: root.routed ? #9299a8 : #3b404b;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            remove-touch := TouchArea {
+                enabled: root.routed;
+                clicked => { root.remove(); }
+            }
+        }
+    }
+}
+
+// Handle dragged from the LFO onto a knob to route the LFO to it. Reports the
+// pointer in window coordinates while dragging.
+export component ModDragHandle inherits Rectangle {
+    out property <bool> dragging: false;
+    out property <length> pointer-x;
+    out property <length> pointer-y;
+    callback dropped();
+
+    width: 56px;
+    height: 24px;
+    border-radius: 12px;
+    background: root.dragging || touch.has-hover ? #3a3222 : #292d36;
+    border-width: 1px;
+    border-color: #f2b84d;
+
+    HorizontalLayout {
+        padding-left: 9px;
+        spacing: 6px;
+        alignment: start;
+
+        VerticalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: #f2b84d;
+            }
+        }
+
+        Text {
+            text: "MOD";
+            font-size: 10px;
+            font-weight: 700;
+            color: #f2b84d;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: root.dragging ? MouseCursor.grabbing : MouseCursor.grab;
+
+        moved => {
+            if root.dragging {
+                root.pointer-x = self.absolute-position.x + self.mouse-x;
+                root.pointer-y = self.absolute-position.y + self.mouse-y;
+            }
+        }
+
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.pointer-x = self.absolute-position.x + self.mouse-x;
+                root.pointer-y = self.absolute-position.y + self.mouse-y;
+                root.dragging = true;
+            } else if root.dragging && event.kind == PointerEventKind.up {
+                root.dropped();
+                root.dragging = false;
+            } else if event.kind == PointerEventKind.cancel {
+                root.dragging = false;
             }
         }
     }
