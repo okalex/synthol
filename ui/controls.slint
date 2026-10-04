@@ -499,6 +499,85 @@ export component WaveformDisplay inherits Rectangle {
     }
 }
 
+// Magnitude response from 20 Hz to 20 kHz on a log axis, +24 dB at the top to
+// -48 dB at the bottom. The path comes from Rust so it matches the DSP.
+export component FilterResponseDisplay inherits Rectangle {
+    in property <int> filter-type: 0;
+    in property <float> cutoff: 1.0;
+    in property <float> q: 0.5;
+    pure callback response-path(int, float, float, float, float) -> string;
+
+    private property <length> plot-left: 10px;
+    private property <length> plot-right: self.width - 10px;
+    private property <length> plot-top: 8px;
+    private property <length> plot-bottom: self.height - 20px;
+    private property <length> plot-width: self.plot-right - self.plot-left;
+    private property <length> plot-height: self.plot-bottom - self.plot-top;
+
+    width: 260px;
+    height: 92px;
+    background: #111319;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: #30343d;
+    clip: true;
+
+    // 100 Hz, 1 kHz and 10 kHz: log10(f / 20) / log10(1000).
+    for fraction in [0.233, 0.566, 0.9]: Rectangle {
+        x: root.plot-left + root.plot-width * fraction;
+        y: root.plot-top;
+        width: 1px;
+        height: root.plot-height;
+        background: #242830;
+    }
+
+    // -24 dB grid line.
+    Rectangle {
+        x: root.plot-left;
+        y: root.plot-top + root.plot-height * 2 / 3;
+        width: root.plot-width;
+        height: 1px;
+        background: #242830;
+    }
+
+    // 0 dB.
+    Rectangle {
+        x: root.plot-left;
+        y: root.plot-top + root.plot-height / 3;
+        width: root.plot-width;
+        height: 1px;
+        background: #343943;
+    }
+
+    Path {
+        x: root.plot-left - self.stroke-width / 2;
+        y: root.plot-top - self.stroke-width / 2;
+        width: root.plot-width + self.stroke-width;
+        height: root.plot-height + self.stroke-width;
+        viewbox-width: root.plot-width / 1px;
+        viewbox-height: root.plot-height / 1px;
+        commands: root.response-path(root.filter-type, root.cutoff, root.q, root.plot-width / 1px, root.plot-height / 1px);
+        stroke: #56a7ff;
+        stroke-width: 2px;
+    }
+
+    for label[index] in ["100", "1k", "10k"]: Text {
+        x: root.plot-left + root.plot-width * (index == 0 ? 0.233 : index == 1 ? 0.566 : 0.9) - self.preferred-width / 2;
+        y: root.plot-bottom + 4px;
+        text: label;
+        font-size: 9px;
+        color: #6f7685;
+    }
+
+    Text {
+        x: root.plot-left + 2px;
+        y: root.plot-top + root.plot-height / 3 - self.preferred-height - 1px;
+        text: "0 dB";
+        font-size: 9px;
+        color: #6f7685;
+    }
+}
+
 // Drag-free select control. Like the other controls it has no FocusScope, so
 // computer-MIDI keys keep reaching the host.
 export component Dropdown inherits Rectangle {

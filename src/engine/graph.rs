@@ -7,6 +7,7 @@ pub(super) struct NodeId(u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NodeKind {
     Oscillator,
+    Filter,
     OutputEnvelope,
     AudioOutput,
 }
@@ -44,6 +45,7 @@ pub(super) struct GraphDocument {
 #[derive(Debug)]
 pub(super) struct CompiledGraph {
     oscillator: NodeId,
+    filter: NodeId,
     envelope: NodeId,
     output: NodeId,
     execution_order: Vec<NodeId>,
@@ -69,7 +71,7 @@ impl fmt::Display for GraphCompileError {
                 write!(formatter, "invalid port {port:?} on node {}", node.0)
             }
             Self::InvalidInitialTopology => formatter.write_str(
-                "the built-in graph must route one oscillator through one output envelope to one audio output",
+                "the built-in graph must route one oscillator through one filter and one output envelope to one audio output",
             ),
             Self::Cycle => formatter.write_str("audio graph contains a cycle"),
         }
@@ -81,6 +83,7 @@ impl std::error::Error for GraphCompileError {}
 impl GraphDocument {
     pub(super) fn initial() -> Self {
         let oscillator = NodeId(1);
+        let filter = NodeId(4);
         let envelope = NodeId(2);
         let output = NodeId(3);
 
@@ -89,6 +92,10 @@ impl GraphDocument {
                 GraphNode {
                     id: oscillator,
                     kind: NodeKind::Oscillator,
+                },
+                GraphNode {
+                    id: filter,
+                    kind: NodeKind::Filter,
                 },
                 GraphNode {
                     id: envelope,
@@ -103,6 +110,16 @@ impl GraphDocument {
                 Connection {
                     from: PortAddress {
                         node: oscillator,
+                        port: Port::AudioOutput,
+                    },
+                    to: PortAddress {
+                        node: filter,
+                        port: Port::AudioInput,
+                    },
+                },
+                Connection {
+                    from: PortAddress {
+                        node: filter,
                         port: Port::AudioOutput,
                     },
                     to: PortAddress {
@@ -142,15 +159,21 @@ impl GraphDocument {
             .iter()
             .filter(|node| node.kind == NodeKind::AudioOutput)
             .collect();
+        let filters: Vec<_> = self
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Filter)
+            .collect();
         let envelopes: Vec<_> = self
             .nodes
             .iter()
             .filter(|node| node.kind == NodeKind::OutputEnvelope)
             .collect();
         if oscillators.len() != 1
+            || filters.len() != 1
             || envelopes.len() != 1
             || outputs.len() != 1
-            || self.nodes.len() != 3
+            || self.nodes.len() != 4
         {
             return Err(GraphCompileError::InvalidInitialTopology);
         }
@@ -170,11 +193,13 @@ impl GraphDocument {
             let valid_source = matches!(
                 (source.kind, connection.from.port),
                 (NodeKind::Oscillator, Port::AudioOutput)
+                    | (NodeKind::Filter, Port::AudioOutput)
                     | (NodeKind::OutputEnvelope, Port::AudioOutput)
             );
             let valid_destination = matches!(
                 (destination.kind, connection.to.port),
-                (NodeKind::OutputEnvelope, Port::AudioInput)
+                (NodeKind::Filter, Port::AudioInput)
+                    | (NodeKind::OutputEnvelope, Port::AudioInput)
                     | (NodeKind::AudioOutput, Port::AudioInput)
             );
             if !valid_source {
@@ -191,11 +216,13 @@ impl GraphDocument {
             }
         }
 
-        if self.connections.len() != 2
+        if self.connections.len() != 3
             || self.connections[0].from.node != oscillators[0].id
-            || self.connections[0].to.node != envelopes[0].id
-            || self.connections[1].from.node != envelopes[0].id
-            || self.connections[1].to.node != outputs[0].id
+            || self.connections[0].to.node != filters[0].id
+            || self.connections[1].from.node != filters[0].id
+            || self.connections[1].to.node != envelopes[0].id
+            || self.connections[2].from.node != envelopes[0].id
+            || self.connections[2].to.node != outputs[0].id
         {
             return Err(GraphCompileError::InvalidInitialTopology);
         }
@@ -203,6 +230,7 @@ impl GraphDocument {
         let execution_order = self.topological_order()?;
         Ok(CompiledGraph {
             oscillator: oscillators[0].id,
+            filter: filters[0].id,
             envelope: envelopes[0].id,
             output: outputs[0].id,
             execution_order,
@@ -237,6 +265,10 @@ impl CompiledGraph {
         self.oscillator
     }
 
+    pub(super) fn filter(&self) -> NodeId {
+        self.filter
+    }
+
     pub(super) fn output(&self) -> NodeId {
         self.output
     }
@@ -255,18 +287,34 @@ mod tests {
     use super::{GraphCompileError, GraphDocument};
 
     #[test]
-    fn built_in_graph_compiles_oscillator_before_output() {
+    fn built_in_graph_routes_oscillator_through_filter_and_envelope() {
         let graph = GraphDocument::initial().compile().unwrap();
         assert_eq!(
             graph.execution_order(),
-            &[graph.oscillator(), graph.envelope(), graph.output()]
+            &[
+                graph.oscillator(),
+                graph.filter(),
+                graph.envelope(),
+                graph.output()
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_a_graph_that_bypasses_the_filter() {
+        let mut document = GraphDocument::initial();
+        document.connections[0].to.node = document.connections[1].to.node;
+        document.connections.remove(1);
+        assert_eq!(
+            document.compile().unwrap_err(),
+            GraphCompileError::InvalidInitialTopology
         );
     }
 
     #[test]
     fn rejects_duplicate_node_ids() {
         let mut document = GraphDocument::initial();
-        document.nodes[2].id = document.nodes[0].id;
+        document.nodes[3].id = document.nodes[0].id;
         assert!(matches!(
             document.compile(),
             Err(GraphCompileError::DuplicateNodeId(_))

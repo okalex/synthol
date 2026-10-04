@@ -319,3 +319,58 @@ fn phase_parameter_sets_where_notes_start() {
     assert!(at_90 > 0.5, "90 degrees started at {at_90}");
     assert!(at_270 < -0.5, "270 degrees started at {at_270}");
 }
+
+#[test]
+fn filter_type_parameter_lists_each_mode() {
+    use crate::plugin::{FilterType, SynthParams};
+    use truce::prelude::*;
+
+    let params = SynthParams::default();
+    assert_eq!(params.filter_type.index(), 0);
+    assert_eq!(
+        FilterType::variant_names(),
+        ["Low Pass", "High Pass", "Band Pass"]
+    );
+    for index in 0..3 {
+        params.set_normalized(
+            crate::plugin::SynthParamsParamId::FilterType.into(),
+            index as f64 / 2.0,
+        );
+        assert_eq!(params.filter_type.index(), index);
+    }
+}
+
+#[test]
+fn filter_parameters_shape_the_oscillator_output() {
+    use crate::plugin::SynthParamsParamId;
+    use std::time::Duration;
+    use truce_test::driver;
+
+    // A 220 Hz sawtooth through the filter; returns the steady-state RMS.
+    let rms = |filter_type: f64, cutoff: f64| {
+        let result = driver!(Plugin)
+            .duration(Duration::from_millis(200))
+            .set_param(SynthParamsParamId::Oscillator, 1.0)
+            .set_param(SynthParamsParamId::Attack, 0.0)
+            .set_param(SynthParamsParamId::FilterType, filter_type)
+            .set_param(SynthParamsParamId::FilterCutoff, cutoff)
+            .script(|script| script.note_on(57, 1.0))
+            .run();
+        let tail = &result.output[0][result.output[0].len() / 2..];
+        (tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt()
+    };
+
+    let open = rms(0.0, 1.0);
+    assert!(open > 0.1, "open filter RMS was {open}");
+    // Low pass at 20 Hz and high pass at 20 kHz both remove almost everything.
+    let low_passed = rms(0.0, 0.0);
+    let high_passed = rms(0.5, 1.0);
+    assert!(low_passed < open * 0.05, "low pass RMS was {low_passed}");
+    assert!(high_passed < open * 0.1, "high pass RMS was {high_passed}");
+    // Band pass around the fundamental keeps it but drops the harmonics.
+    let band_passed = rms(1.0, (220.0_f64 / 20.0).ln() / 1_000.0_f64.ln());
+    assert!(
+        (open * 0.3..open * 0.95).contains(&band_passed),
+        "band pass RMS was {band_passed} of {open}"
+    );
+}

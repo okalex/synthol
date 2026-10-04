@@ -7,6 +7,8 @@ pub use midi::MidiEvent;
 
 use graph::{CompiledGraph, GraphDocument};
 use node::envelope::AdsrSettings;
+use node::filter::Filter;
+pub use node::filter::{FilterMode, FilterSettings};
 pub use node::oscillator::Waveform;
 use voice::Voice;
 
@@ -16,6 +18,7 @@ pub const MAX_VOICES: usize = 8;
 #[derive(Debug)]
 pub struct SynthEngine {
     graph: CompiledGraph,
+    filter: Filter,
     voices: [Voice; MAX_VOICES],
     voice_limit: usize,
     next_voice_stamp: u64,
@@ -29,6 +32,7 @@ impl Default for SynthEngine {
 
         Self {
             graph,
+            filter: Filter::default(),
             voices: Default::default(),
             voice_limit: MAX_VOICES,
             next_voice_stamp: 0,
@@ -41,6 +45,7 @@ impl SynthEngine {
         if !sample_rate.is_finite() || sample_rate <= 0.0 {
             return false;
         }
+        self.filter.prepare(sample_rate);
         let mut prepared = true;
         for voice in &mut self.voices {
             prepared &= voice.reset(sample_rate);
@@ -54,6 +59,13 @@ impl SynthEngine {
         for voice in &mut self.voices {
             voice.set_envelope_settings(settings);
         }
+    }
+
+    /// Set the filter every voice's oscillator is routed through. The
+    /// coefficients are only recomputed when the settings change, so this is
+    /// cheap to call per sample while a smoothed parameter settles.
+    pub fn set_filter_settings(&mut self, settings: FilterSettings) {
+        self.filter.set_settings(settings);
     }
 
     pub fn set_waveform(&mut self, waveform: Waveform) {
@@ -132,10 +144,11 @@ impl SynthEngine {
 
     pub fn next_sample(&mut self, gain: f32) -> f32 {
         let graph = &self.graph;
+        let filter = self.filter.coefficients();
         let output: f32 = self
             .voices
             .iter_mut()
-            .map(|voice| voice.next_sample(graph))
+            .map(|voice| voice.next_sample(graph, filter))
             .sum();
         output * gain
     }
@@ -263,6 +276,79 @@ mod tests {
             engine.voice_for_note(69).unwrap().envelope_level(),
             envelope_after_one_sample * 2.0
         );
+    }
+
+    fn render_note(settings: super::FilterSettings) -> Vec<f32> {
+        let mut engine = SynthEngine::default();
+        engine.reset(48_000.0);
+        engine.set_waveform(super::Waveform::Sawtooth);
+        engine.set_filter_settings(settings);
+        note_on(&mut engine, 57);
+        (0..4_800).map(|_| engine.next_sample(1.0)).collect()
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn oscillators_are_routed_through_the_filter() {
+        use super::{FilterMode, FilterSettings};
+
+        let open = render_note(FilterSettings::default());
+        let closed = render_note(FilterSettings {
+            mode: FilterMode::LowPass,
+            cutoff_hz: 100.0,
+            q: std::f32::consts::FRAC_1_SQRT_2,
+        });
+        let high_passed = render_note(FilterSettings {
+            mode: FilterMode::HighPass,
+            cutoff_hz: 10_000.0,
+            q: std::f32::consts::FRAC_1_SQRT_2,
+        });
+        assert!(rms(&closed) < rms(&open) * 0.25);
+        assert!(rms(&high_passed) < rms(&open) * 0.25);
+    }
+
+    #[test]
+    fn filter_memory_is_cleared_when_a_voice_finishes() {
+        use super::{FilterMode, FilterSettings};
+        use crate::engine::AdsrSettings;
+        use std::time::Duration;
+
+        let resonant_engine = || {
+            let mut engine = SynthEngine::default();
+            engine.reset(48_000.0);
+            engine.set_filter_settings(FilterSettings {
+                mode: FilterMode::LowPass,
+                cutoff_hz: 300.0,
+                q: 10.0,
+            });
+            engine.set_output_envelope_settings(AdsrSettings {
+                attack: Duration::ZERO,
+                decay: Duration::ZERO,
+                sustain_db: 0.0,
+                release: Duration::ZERO,
+            });
+            engine
+        };
+        let first_samples = |engine: &mut SynthEngine| {
+            note_on(engine, 57);
+            (0..64).map(|_| engine.next_sample(1.0)).collect::<Vec<_>>()
+        };
+
+        let mut engine = resonant_engine();
+        note_on(&mut engine, 57);
+        for _ in 0..1_000 {
+            engine.next_sample(1.0);
+        }
+        engine.handle_event(MidiEvent::NoteOff { note: 57 });
+        for _ in 0..10 {
+            engine.next_sample(1.0);
+        }
+        assert!(!engine.has_active_note());
+
+        assert_eq!(first_samples(&mut engine), first_samples(&mut resonant_engine()));
     }
 
     #[test]

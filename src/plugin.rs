@@ -5,7 +5,7 @@ use truce::prelude::*;
 
 use crate::editor;
 use crate::engine::node::envelope::AdsrSettings;
-use crate::engine::{MidiEvent, SynthEngine, Waveform};
+use crate::engine::{FilterMode, FilterSettings, MidiEvent, SynthEngine, Waveform};
 
 #[derive(ParamEnum)]
 pub enum OscillatorType {
@@ -22,6 +22,26 @@ impl From<OscillatorType> for Waveform {
             OscillatorType::Square => Self::Square,
             OscillatorType::Triangle => Self::Triangle,
             OscillatorType::Sawtooth => Self::Sawtooth,
+        }
+    }
+}
+
+#[derive(ParamEnum)]
+pub enum FilterType {
+    #[name = "Low Pass"]
+    LowPass,
+    #[name = "High Pass"]
+    HighPass,
+    #[name = "Band Pass"]
+    BandPass,
+}
+
+impl From<FilterType> for FilterMode {
+    fn from(filter: FilterType) -> Self {
+        match filter {
+            FilterType::LowPass => Self::LowPass,
+            FilterType::HighPass => Self::HighPass,
+            FilterType::BandPass => Self::BandPass,
         }
     }
 }
@@ -65,6 +85,23 @@ pub struct SynthParams {
     pub oscillator: EnumParam<OscillatorType>,
     #[param(name = "Phase", range = "linear(0, 360)", default = 0.0, unit = "°")]
     pub phase: FloatParam,
+    #[param(name = "Filter Type", default = 0)]
+    pub filter_type: EnumParam<FilterType>,
+    #[param(
+        name = "Filter Cutoff",
+        range = "log(20, 20000)",
+        default = 20000.0,
+        unit = "Hz",
+        smooth = "log(20)"
+    )]
+    pub filter_cutoff: FloatParam,
+    #[param(
+        name = "Filter Q",
+        range = "log(0.1, 20)",
+        default = 0.707,
+        smooth = "exp(20)"
+    )]
+    pub filter_q: FloatParam,
 }
 
 pub struct Synth;
@@ -104,6 +141,8 @@ impl PluginLogic for Synth {
         state.engine.set_waveform(params.oscillator.value().into());
         state.engine.set_start_phase(params.phase.read() / 360.0);
 
+        let filter_mode: FilterMode = params.filter_type.value().into();
+
         let mut next_event = 0;
         let output_channels = buffer.num_output_channels();
 
@@ -119,6 +158,12 @@ impl PluginLogic for Synth {
                 next_event += 1;
             }
 
+            // Cutoff and Q are smoothed per sample to avoid zipper noise.
+            state.engine.set_filter_settings(FilterSettings {
+                mode: filter_mode,
+                cutoff_hz: params.filter_cutoff.read(),
+                q: params.filter_q.read(),
+            });
             let sample = state.engine.next_sample(db_to_linear(params.volume.read()));
             for channel in 0..output_channels {
                 buffer.output(channel)[sample_index] = sample;

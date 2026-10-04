@@ -3,9 +3,9 @@
 ## Goals
 
 Synthol is currently a small Truce instrument: MIDI drives up to eight
-oscillator voices (sine, square, triangle, or sawtooth), and a Slint editor
-controls output gain, the oscillator waveform, the output envelope, and the
-polyphony limit. The intended product is a modular synthesizer where users
+oscillator voices (sine, square, triangle, or sawtooth) through a 12 dB/octave
+filter, and a Slint editor controls output gain, the oscillator waveform, the
+filter, the output envelope, and the polyphony limit. The intended product is a modular synthesizer where users
 can add and connect oscillators, envelopes, LFOs, filters, effects, and other
 modules.
 
@@ -18,10 +18,16 @@ belong off the real-time audio thread.
 
 The code is being migrated incrementally. The current foundation separates
 the Truce adapter, Slint editor bridge, engine, MIDI event type,
-multi-waveform oscillator, and reusable ADSR envelope. Engine construction compiles a fixed
-typed oscillator-to-output-envelope-to-output graph once; processing follows
+multi-waveform oscillator, biquad filter, and reusable ADSR envelope. Engine
+construction compiles a fixed typed oscillator-to-filter-to-output-envelope-to-output
+graph once; processing follows
 its prepared order without compiling or allocating in the audio callback.
-Output gain is applied after the envelope. This fixed graph is an internal
+Output gain is applied after the envelope. The filter (`engine/node/filter.rs`)
+is an RBJ-cookbook biquad in low-pass, high-pass, or band-pass mode. The engine
+computes its coefficients once from the smoothed host parameters, only when
+they change, and shares them with every voice; each voice keeps its own
+filter state, cleared when the voice goes silent. The editor's response plot
+evaluates the same coefficients' magnitude response. This fixed graph is an internal
 representation only: it is not user-editable or serialized, and graph
 publication, patch persistence, additional node types, and a patching UI are
 future work. This keeps the current instrument's behavior unchanged while
@@ -180,7 +186,7 @@ parameter.
 
 The engine owns a fixed pool of `MAX_VOICES` (8) voices in
 `engine/voice.rs`, allocated up front so note handling never allocates on the
-audio thread. Each voice holds its own oscillator and envelope state and runs
+audio thread. Each voice holds its own oscillator, filter, and envelope state and runs
 the shared compiled graph; voice outputs are summed before output gain. The
 host-visible `Voices` parameter (1-8) limits how many voices new notes may
 use. Allocation policy, in `SynthEngine::allocate_voice`, is: retrigger a voice

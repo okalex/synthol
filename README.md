@@ -3,8 +3,8 @@
 A minimal polyphonic instrument plugin built with Rust and
 [Truce](https://github.com/truce-audio/truce). It accepts MIDI note-on and
 note-off events, uses MIDI note numbers for pitch, and scales amplitude by
-note-on velocity. A reusable ADSR envelope shapes the oscillator at the output
-stage (10 ms attack, 500 ms decay, -6 dB sustain, 1 s release) before output
+note-on velocity. Each voice's oscillator runs through a filter, then a
+reusable ADSR envelope shapes it at the output stage (10 ms attack, 500 ms decay, -6 dB sustain, 1 s release) before output
 gain. Up to eight voices can sound at once; a **Voices** dropdown in the editor
 (also a host-automatable parameter) sets the limit from Mono to 8. When all
 voices are busy, a new note steals the oldest releasing voice, or else the
@@ -23,9 +23,22 @@ shape as it plays from the chosen start phase, updating live while the knob
 turns. It is computed from the oscillator's own sample function rather than
 drawn by hand.
 
-The synth has no modulation, filters, or effects yet. The Slint editor
+The **Filter** row selects a 12 dB/octave (two-pole) low-pass, high-pass, or
+band-pass filter, with **Cutoff** (20 Hz to 20 kHz) and **Q** (0.1 to 20)
+knobs; all three are host-automatable. The filters are RBJ-cookbook biquads:
+low and high pass resonate above Q 0.707 (Butterworth, -3 dB at the cutoff),
+and band pass peaks at 0 dB at the cutoff, narrowing as Q rises. Every voice
+has its own filter memory. Cutoff and Q are smoothed so sweeps don't zipper.
+The defaults (low pass, 20 kHz, Q 0.707) leave the sound nearly unfiltered. A
+response display plots gain (+24 dB to -48 dB) from 20 Hz to 20 kHz on a log
+axis, computed from the same coefficients the DSP uses and updating live as
+the controls move. The editor doesn't know the host sample rate, so the plot
+assumes 48 kHz; near Nyquist the real response can differ slightly.
+
+The synth has no modulation or effects yet. The Slint editor
 currently provides a reusable ADSR graph/knob panel for the output envelope,
-an output-gain slider, and a voice-count dropdown. Attack, decay, and release each range from 0 ms to 10 s
+an output-gain slider, a voice-count dropdown, and the oscillator and filter
+controls. Attack, decay, and release each range from 0 ms to 10 s
 on a skewed taper that gives short times more of the knob. The controls use
 Slint's software renderer and are drag-only. The editor passes every keyboard
 event back to the host, so Ableton's computer MIDI keyboard remains available

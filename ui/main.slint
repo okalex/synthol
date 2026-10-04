@@ -1,4 +1,4 @@
-import { AdsrEnvelopePanel, Dropdown, SynthKnob, WaveformDisplay } from "controls.slint";
+import { FilterResponseDisplay, AdsrEnvelopePanel, Dropdown, SynthKnob, WaveformDisplay } from "controls.slint";
 
 import "JetBrainsMono-Regular.ttf";
 
@@ -116,10 +116,20 @@ export component SynthUi inherits Window {
     callback phase-changed(float);
     callback phase-released();
     pure callback oscillator-cycle-path(int, float, float, float) -> string;
+    in-out property <int> filter-type: 0;
+    in-out property <float> filter-cutoff: 1.0;
+    in-out property <string> filter-cutoff-text: "20.0 kHz";
+    in-out property <float> filter-q: 0.5;
+    in-out property <string> filter-q-text: "0.71";
+    callback filter-type-selected(int);
+    // Parameter id 0 is cutoff, 1 is Q.
+    callback filter-changed(int, float);
+    callback filter-released(int);
+    pure callback filter-response-path(int, float, float, float, float) -> string;
 
     title: "Synthol";
     preferred-width: 720px;
-    preferred-height: 640px;
+    preferred-height: 780px;
     background: #17191f;
     default-font-family: "JetBrains Mono";
 
@@ -227,6 +237,60 @@ export component SynthUi inherits Window {
                         selected-index: root.voices - 1;
                         selected(index) => { root.voices-selected(index + 1); }
                     }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+
+                Text {
+                    text: "FILTER";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: #9299a8;
+                    vertical-alignment: center;
+                }
+
+                VerticalLayout {
+                    alignment: center;
+
+                    Dropdown {
+                        options: ["Low Pass", "High Pass", "Band Pass"];
+                        selected-index: root.filter-type;
+                        selected(index) => { root.filter-type-selected(index); }
+                    }
+                }
+
+                VerticalLayout {
+                    alignment: center;
+
+                    FilterResponseDisplay {
+                        filter-type: root.filter-type;
+                        cutoff: root.filter-cutoff;
+                        q: root.filter-q;
+                        response-path(filter-type, cutoff, q, width, height) => {
+                            return root.filter-response-path(filter-type, cutoff, q, width, height);
+                        }
+                    }
+                }
+
+                SynthKnob {
+                    value <=> root.filter-cutoff;
+                    label: "CUTOFF";
+                    parameter-id: 0;
+                    value-text: root.filter-cutoff-text;
+                    changed(id, value) => { root.filter-changed(id, value); }
+                    released(id) => { root.filter-released(id); }
+                }
+
+                SynthKnob {
+                    value <=> root.filter-q;
+                    label: "Q";
+                    parameter-id: 1;
+                    value-text: root.filter-q-text;
+                    changed(id, value) => { root.filter-changed(id, value); }
+                    released(id) => { root.filter-released(id); }
                 }
             }
 

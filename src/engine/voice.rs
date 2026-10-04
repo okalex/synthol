@@ -1,12 +1,14 @@
 use super::graph::CompiledGraph;
 use super::midi::MidiEvent;
 use super::node::envelope::{AdsrEnvelope, AdsrSettings};
+use super::node::filter::{BiquadCoefficients, BiquadState};
 use super::node::oscillator::{Oscillator, Waveform};
 
-/// Per-voice node state for the oscillator-to-envelope graph.
+/// Per-voice node state for the oscillator-to-filter-to-envelope graph.
 #[derive(Debug, Default)]
 pub(super) struct Voice {
     oscillator: Oscillator,
+    filter: BiquadState,
     envelope: AdsrEnvelope,
     note: Option<u8>,
     /// Allocation order stamp; lower values are older and stolen first.
@@ -16,6 +18,7 @@ pub(super) struct Voice {
 impl Voice {
     pub(super) fn reset(&mut self, sample_rate: f32) -> bool {
         self.oscillator.reset(sample_rate);
+        self.filter.reset();
         self.note = None;
         self.started_at = 0;
         self.envelope.prepare(sample_rate)
@@ -34,6 +37,12 @@ impl Voice {
     }
 
     pub(super) fn note_on(&mut self, note: u8, velocity: u8, started_at: u64) {
+        // A voice can go silent without rendering another sample (e.g. a
+        // zero-length release), so clear stale filter memory here too. A
+        // retriggered, still-sounding voice keeps it to avoid a click.
+        if !self.is_active() {
+            self.filter.reset();
+        }
         self.oscillator
             .handle_event(MidiEvent::NoteOn { note, velocity });
         self.envelope.note_on();
@@ -48,7 +57,9 @@ impl Voice {
         }
     }
 
-    pub(super) fn next_sample(&mut self, graph: &CompiledGraph) -> f32 {
+    /// Renders one sample; `filter` holds the coefficients shared by every
+    /// voice, while each voice keeps its own filter memory.
+    pub(super) fn next_sample(&mut self, graph: &CompiledGraph, filter: &BiquadCoefficients) -> f32 {
         if !self.is_active() {
             return 0.0;
         }
@@ -59,6 +70,8 @@ impl Voice {
         for &node in graph.execution_order() {
             if node == graph.oscillator() {
                 audio = self.oscillator.next_sample();
+            } else if node == graph.filter() {
+                audio = self.filter.process_sample(filter, audio);
             } else if node == graph.envelope() {
                 audio = self.envelope.process_sample(audio);
             } else if node == graph.output() {
@@ -68,6 +81,7 @@ impl Voice {
 
         if !self.envelope.is_active() && !self.oscillator.has_active_note() {
             self.oscillator.stop();
+            self.filter.reset();
             self.note = None;
         }
 
