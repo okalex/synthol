@@ -17,9 +17,19 @@ pub struct SynthParams {
         smooth = "exp(5)"
     )]
     pub volume: FloatParam,
-    #[param(name = "Attack", range = "skewed(0, 10000, 0.2)", default = 10.0, unit = "ms")]
+    #[param(
+        name = "Attack",
+        range = "skewed(0, 10000, 0.2)",
+        default = 10.0,
+        unit = "ms"
+    )]
     pub attack: FloatParam,
-    #[param(name = "Decay", range = "skewed(0, 10000, 0.2)", default = 500.0, unit = "ms")]
+    #[param(
+        name = "Decay",
+        range = "skewed(0, 10000, 0.2)",
+        default = 500.0,
+        unit = "ms"
+    )]
     pub decay: FloatParam,
     #[param(name = "Sustain", range = "linear(-60, 0)", default = -6.0, unit = "dB")]
     pub sustain: FloatParam,
@@ -30,6 +40,8 @@ pub struct SynthParams {
         unit = "ms"
     )]
     pub release: FloatParam,
+    #[param(name = "Voices", range = "discrete(1, 8)", default = 8)]
+    pub voices: IntParam,
 }
 
 pub struct Synth;
@@ -64,6 +76,8 @@ impl PluginLogic for Synth {
             sustain_db: params.sustain.read() as f32,
             release: Duration::from_secs_f64(f64::from(params.release.read()) / 1000.0),
         });
+
+        state.engine.set_voice_limit(params.voices.value_usize());
 
         let mut next_event = 0;
         let output_channels = buffer.num_output_channels();

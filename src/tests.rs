@@ -177,3 +177,49 @@ fn envelope_times_reach_zero_milliseconds() {
         assert_eq!(params.get_plain(id.into()), Some(0.0));
     }
 }
+
+#[test]
+fn voices_parameter_spans_one_to_eight() {
+    use crate::plugin::{SynthParams, SynthParamsParamId};
+    use truce::prelude::*;
+
+    let params = SynthParams::default();
+    assert_eq!(params.voices.value(), 8);
+    for (normalized, voices) in [(0.0, 1.0), (3.0 / 7.0, 4.0), (1.0, 8.0)] {
+        params.set_normalized(SynthParamsParamId::Voices.into(), normalized);
+        assert_eq!(
+            params.get_plain(SynthParamsParamId::Voices.into()),
+            Some(voices)
+        );
+    }
+}
+
+#[test]
+fn voices_parameter_controls_polyphony() {
+    use std::time::Duration;
+    use truce_test::driver;
+
+    let render_chord = |normalized_voices| {
+        driver!(Plugin)
+            .duration(Duration::from_millis(50))
+            .set_param(crate::plugin::SynthParamsParamId::Voices, normalized_voices)
+            .script(|script| {
+                script.note_on(60, 1.0);
+                script.note_on(64, 1.0);
+                script.note_on(67, 1.0);
+            })
+            .run()
+    };
+
+    let peak = |result: &truce_test::DriverResult<Plugin>| {
+        result.output[0]
+            .iter()
+            .copied()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()))
+    };
+    let mono_peak = peak(&render_chord(0.0));
+    let poly_peak = peak(&render_chord(1.0));
+
+    assert!(mono_peak <= 1.0, "mono peak was {mono_peak}");
+    assert!(poly_peak > 1.5, "poly peak was {poly_peak}");
+}

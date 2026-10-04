@@ -5,6 +5,7 @@ use std::sync::Arc;
 use truce::prelude::*;
 use truce_slint::{PluginContext, SlintEditor, SyncFn};
 
+use crate::engine::MAX_VOICES;
 use crate::plugin::{SynthParams, SynthParamsParamId};
 
 slint::include_modules!();
@@ -60,6 +61,15 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
                 }
             });
 
+            let pending_edits_for_ui = pending_edits.clone();
+            let state_for_ui = state.clone();
+            ui.on_voices_selected(move |count| {
+                let id = SynthParamsParamId::Voices;
+                let normalized = voices_to_normalized(count);
+                state_for_ui.params().set_normalized(id.into(), normalized);
+                enqueue_edit(&pending_edits_for_ui, (id, normalized));
+            });
+
             Box::new(move |state: &PluginContext<SynthParams>| {
                 for (id, value) in pending_edits.borrow_mut().drain(..) {
                     state.automate(id, value);
@@ -87,6 +97,7 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
                 ui.set_release_text(slint::SharedString::from(
                     state.format_param(SynthParamsParamId::Release),
                 ));
+                ui.set_voices(state.params().voices.value_i32());
             })
         },
     )
@@ -103,6 +114,11 @@ fn enqueue_edit(
     } else {
         edits.push(edit);
     }
+}
+
+fn voices_to_normalized(count: i32) -> f64 {
+    let max = MAX_VOICES as f64;
+    ((f64::from(count) - 1.0) / (max - 1.0)).clamp(0.0, 1.0)
 }
 
 fn envelope_parameter(id: i32) -> Option<SynthParamsParamId> {

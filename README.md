@@ -1,16 +1,19 @@
 # Synthol VST
 
-A minimal monophonic sine-wave instrument plugin built with Rust and
+A minimal polyphonic sine-wave instrument plugin built with Rust and
 [Truce](https://github.com/truce-audio/truce). It accepts MIDI note-on and
 note-off events, uses MIDI note numbers for pitch, and scales amplitude by
 note-on velocity. A reusable ADSR envelope shapes the oscillator at the output
 stage (10 ms attack, 500 ms decay, -6 dB sustain, 1 s release) before output
-gain. The most recent note-on takes over the single oscillator; only a note-off
-for that active pitch releases it.
+gain. Up to eight voices can sound at once; a **Voices** dropdown in the editor
+(also a host-automatable parameter) sets the limit from Mono to 8. When all
+voices are busy, a new note steals the oldest releasing voice, or else the
+oldest held one. Voices are summed without normalization, so large chords can
+exceed 0 dBFS; lower the output gain if needed.
 
 The synth has no modulation, filters, or effects yet. The Slint editor
-currently provides a reusable ADSR graph/knob panel for the output envelope and
-an output-gain slider. Attack, decay, and release each range from 0 ms to 10 s
+currently provides a reusable ADSR graph/knob panel for the output envelope,
+an output-gain slider, and a voice-count dropdown. Attack, decay, and release each range from 0 ms to 10 s
 on a skewed taper that gives short times more of the knob. The controls use
 Slint's software renderer and are drag-only. The editor passes every keyboard
 event back to the host, so Ableton's computer MIDI keyboard remains available

@@ -2,8 +2,9 @@
 
 ## Goals
 
-Synthol is currently a small Truce instrument: MIDI drives one sine oscillator,
-and a Slint editor controls output gain. The intended product is a modular
+Synthol is currently a small Truce instrument: MIDI drives up to eight
+sine-oscillator voices, and a Slint editor controls output gain, the output
+envelope, and the polyphony limit. The intended product is a modular
 synthesizer where users can add and connect oscillators, envelopes, LFOs,
 filters, effects, and other modules.
 
@@ -176,10 +177,16 @@ multiplicative scaling) and clamp/convert values at the destination's
 parameter domain. Do not make modulation mutate the saved base value of a
 parameter.
 
-The present engine is monophonic and last-note-wins. Preserve that behavior
-while extracting its oscillator and MIDI handling; add a voice manager as a
-separate feature rather than making the initial graph abstraction depend on
-polyphony prematurely.
+The engine owns a fixed pool of `MAX_VOICES` (8) voices in
+`engine/voice.rs`, allocated up front so note handling never allocates on the
+audio thread. Each voice holds its own oscillator and envelope state and runs
+the shared compiled graph; voice outputs are summed before output gain. The
+host-visible `Voices` parameter (1-8) limits how many voices new notes may
+use. Allocation policy, in `SynthEngine::allocate_voice`, is: retrigger a voice
+already sounding the same note, else take a free voice, else steal the oldest
+releasing voice, else steal the oldest held voice. With one voice this
+reproduces the earlier monophonic last-note-wins behavior. Lowering the limit
+releases held voices above it and lets them finish their release.
 
 ## Parameters and host integration
 
