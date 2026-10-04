@@ -25,10 +25,12 @@ use crate::plugin::{
 
 slint::include_modules!();
 
+const EDITOR_SIZE: (u32, u32) = (1100, 1100);
+
 pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
     SlintEditor::new(
         params,
-        (720, 1010),
+        EDITOR_SIZE,
         |state: PluginContext<SynthParams>| -> SyncFn<SynthParams> {
             let ui = SynthUi::new().expect("failed to create Slint editor");
             setup_editor(state, ui)
@@ -1167,7 +1169,8 @@ mod tests {
 
         truce_slint::platform::ensure_platform();
         let window = truce_slint::platform::create_slint_window();
-        window.set_size(slint::PhysicalSize::new(720, 1010));
+        let (width, height) = EDITOR_SIZE;
+        window.set_size(slint::PhysicalSize::new(width, height));
         let ui = SynthUi::new().unwrap();
         let params = Arc::new(SynthParams::default());
         let state = editor_test_context(params.clone());
@@ -1175,19 +1178,14 @@ mod tests {
         sync(&state);
         assert_eq!(ui.get_lfo_count(), 0);
         ui.show().unwrap();
-        let mut pixels = vec![PremultipliedRgbaColor::default(); 720 * 1010];
+        let mut pixels = vec![PremultipliedRgbaColor::default(); (width * height) as usize];
         assert!(window.draw_if_needed(|renderer| {
-            renderer.render(&mut pixels, 720);
+            renderer.render(&mut pixels, width as usize);
         }));
         let empty_pixels: Vec<_> = pixels
             .iter()
             .map(|pixel| (pixel.red, pixel.green, pixel.blue))
             .collect();
-        assert_eq!(
-            empty_pixels[500 * 720 + 20],
-            (32, 35, 43),
-            "the empty Modulators panel must collapse so the output envelope stays visible"
-        );
 
         params.set_normalized(SynthParamsParamId::OscCount.into(), 1.0 / 3.0);
         for index in 0..MAX_LFOS {
@@ -1214,12 +1212,71 @@ mod tests {
         assert_eq!(params.lfo_count.value_usize(), MAX_LFOS);
         window.request_redraw();
         assert!(window.draw_if_needed(|renderer| {
-            renderer.render(&mut pixels, 720);
+            renderer.render(&mut pixels, width as usize);
         }));
         let active_pixels: Vec<_> = pixels
             .iter()
             .map(|pixel| (pixel.red, pixel.green, pixel.blue))
             .collect();
+        let pixel_at = |image: &[(u8, u8, u8)], x: usize, y: usize| image[y * width as usize + x];
+        let plot_rows = |image: &[(u8, u8, u8)], left: usize, right: usize| {
+            (150..500)
+                .filter(|&y| {
+                    (left..right)
+                        .filter(|&x| pixel_at(image, x, y) == (17, 19, 25))
+                        .count()
+                        >= 450
+                })
+                .collect::<Vec<_>>()
+        };
+        let oscillator_plot = plot_rows(&active_pixels, 30, 530);
+        let lfo_plot = plot_rows(&active_pixels, 570, 1070);
+        assert!(
+            oscillator_plot.len() >= 140,
+            "oscillator plot must be wide and tall"
+        );
+        assert!(lfo_plot.len() >= 140, "LFO plot must be wide and tall");
+        assert_eq!(
+            oscillator_plot.first(),
+            lfo_plot.first(),
+            "plots must align in two columns"
+        );
+        let plot_bottom = *oscillator_plot.last().unwrap();
+        for x in [184, 280, 376, 820] {
+            assert_eq!(
+                pixel_at(&active_pixels, x, plot_bottom + 52),
+                (41, 45, 54),
+                "oscillator and LFO knobs must sit directly below their plots"
+            );
+        }
+        assert_eq!(
+            pixel_at(&active_pixels, 790, 200),
+            (41, 45, 54),
+            "LFO mode selector must be beside the shape selector above the plot"
+        );
+        assert!(plot_rows(&empty_pixels, 30, 530).len() >= 140);
+        assert!(
+            plot_rows(&empty_pixels, 570, 1070).is_empty(),
+            "an empty Modulators column must not show an LFO plot"
+        );
+        for image in [&empty_pixels, &active_pixels] {
+            let filter_row = (plot_bottom + 100..height as usize)
+                .find(|&y| pixel_at(image, 190, y) == (17, 19, 25))
+                .expect("filter response must be below both columns");
+            assert_eq!(
+                pixel_at(image, 700, filter_row),
+                (17, 19, 25),
+                "filter response must expand across the full-width row"
+            );
+            let envelope_row = (filter_row + 100..height as usize)
+                .find(|&y| pixel_at(image, 40, y) == (17, 19, 25))
+                .expect("output envelope must be below the filter");
+            assert_eq!(
+                pixel_at(image, 1060, envelope_row),
+                (17, 19, 25),
+                "output envelope must span both columns"
+            );
+        }
         assert_ne!(active_pixels, empty_pixels);
         let untouched = read_routes(&state, 0);
         ui.invoke_mod_depth_changed(ModDestination::OscLevel(1).index() as i32, -0.25);

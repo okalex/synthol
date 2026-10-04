@@ -23,6 +23,12 @@ oscillators on its note and sums them, unnormalized, before the filter, so
 several oscillators at full level can exceed 0 dBFS; lower their levels if
 needed.
 
+The editor opens at 1100 x 1100 logical pixels. Oscillators occupy the left
+column and Modulators the right, with larger waveform plots and their knobs
+directly underneath. The Filter spans both columns below them, followed by
+the full-width output envelope. LFO routing slots are stacked below the LFO
+controls; the content remains wheel-scrollable if it exceeds the window.
+
 Each oscillator's tab has a type dropdown that selects the
 waveform: sine, square, triangle, or sawtooth. The square and sawtooth waves
 are band-limited with PolyBLEP; the triangle is generated directly and has
@@ -32,7 +38,7 @@ sets where in the cycle each new note starts; sounding notes are unaffected.
 Phases other than 0° start mid-cycle, so short attacks may click. A **Pitch**
 knob transposes that oscillator by ±24 semitones and a **Level** knob (0% to
 100%) sets its volume before the filter; both are host-automatable and
-smoothed. Next to the
+smoothed. Below the
 dropdown, a waveform display plots one cycle (0° to 360°) of the selected
 shape as it plays from the chosen start phase, updating live while the knob
 turns. It is computed from the oscillator's own sample function rather than
@@ -68,7 +74,8 @@ parameter controls the active count (0 to 4).
 Each LFO has independent controls and four routing slots. A dropdown selects its shape (sine, square, triangle, or sawtooth, without
 band-limiting), a **Rate** knob sets 0.01 Hz to 30 Hz on a log taper, and a
 **Mode** dropdown selects **Trigger** or **Sync**; all three are
-host-automatable. In Trigger mode every note gets its own LFO, which starts
+host-automatable. The shape and mode selectors sit side by side above the
+plot, with Rate centered below it. In Trigger mode every note gets its own LFO, which starts
 from 0° when that note is pressed and stops when that note's release ends, so
 a note played later starts a fresh cycle while earlier notes' LFOs keep
 running. In Sync mode a single shared LFO runs continuously and ignores notes.

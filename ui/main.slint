@@ -185,8 +185,8 @@ export component SynthUi inherits Window {
     callback mod-depth-released(int);
 
     title: "Synthol";
-    preferred-width: 720px;
-    preferred-height: 1010px;
+    preferred-width: 1100px;
+    preferred-height: 1100px;
     background: #17191f;
     default-font-family: "JetBrains Mono";
 
@@ -215,457 +215,468 @@ export component SynthUi inherits Window {
             viewport-width: self.width;
             viewport-height: content.preferred-height;
 
-        content := VerticalLayout {
-            width: body.width;
-            height: self.preferred-height;
-            padding: 18px;
-            spacing: 10px;
-
-            HorizontalLayout {
-                spacing: 20px;
-                alignment: center;
-
-                Text {
-                    text: "OUTPUT";
-                    font-size: 10px;
-                    font-weight: 700;
-                    color: #9299a8;
-                }
-
-                OutputGainSlider {
-                    width: 420px;
-                    value <=> root.gain;
-                    value-text: root.gain-text;
-                    pressed => { root.gain-pressed(); }
-                    changed(value) => { root.gain-changed(value); }
-                    released => { root.gain-released(); }
-                }
-
-                Text {
-                    text: "VOICES";
-                    font-size: 10px;
-                    font-weight: 700;
-                    color: #9299a8;
-                    vertical-alignment: center;
-                }
-
-                VerticalLayout {
-                    alignment: center;
-
-                    Dropdown {
-                        width: 72px;
-                        options: ["Mono", "2", "3", "4", "5", "6", "7", "8"];
-                        selected-index: root.voices - 1;
-                        selected(index) => { root.voices-selected(index + 1); }
-                    }
-                }
-            }
-
-            VerticalLayout {
-                spacing: 4px;
+            content := VerticalLayout {
+                width: body.width;
+                height: self.preferred-height;
+                padding: 18px;
+                spacing: 10px;
 
                 HorizontalLayout {
-                    spacing: 12px;
-                    alignment: start;
+                    spacing: 20px;
+                    alignment: center;
 
                     Text {
-                        text: "OSCILLATORS";
+                        text: "OUTPUT";
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: #9299a8;
+                    }
+
+                    OutputGainSlider {
+                        width: 420px;
+                        value <=> root.gain;
+                        value-text: root.gain-text;
+                        pressed => { root.gain-pressed(); }
+                        changed(value) => { root.gain-changed(value); }
+                        released => { root.gain-released(); }
+                    }
+
+                    Text {
+                        text: "VOICES";
                         font-size: 10px;
                         font-weight: 700;
                         color: #9299a8;
                         vertical-alignment: center;
                     }
-
-                    if root.oscillators.length < root.max-oscillators: TextButton {
-                        text: "+ ADD";
-                        clicked => {
-                            root.selected-oscillator = root.oscillators.length;
-                            root.oscillator-add();
-                        }
-                    }
-                }
-
-                VerticalLayout {
-                    spacing: 0px;
-
-                    HorizontalLayout {
-                        padding-left: 8px;
-                        spacing: 2px;
-                        alignment: start;
-
-                        for osc[index] in root.oscillators: TabButton {
-                            text: "OSC " + (index + 1);
-                            selected: index == root.current-oscillator;
-                            closable: root.oscillators.length > 1;
-                            clicked => { root.selected-oscillator = index; }
-                            close => {
-                                if root.selected-oscillator > index {
-                                    root.selected-oscillator -= 1;
-                                }
-                                root.oscillator-remove(index);
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        background: #20232b;
-                        border-radius: 8px;
-
-                        HorizontalLayout {
-                            padding: 6px;
-                            padding-left: 14px;
-                            spacing: 12px;
-                            alignment: start;
-
-                            VerticalLayout {
-                                alignment: center;
-
-                                Dropdown {
-                                    options: ["Sine", "Square", "Triangle", "Sawtooth"];
-                                    selected-index: root.current-osc.waveform;
-                                    selected(waveform) => { root.oscillator-selected(root.current-oscillator, waveform); }
-                                }
-                            }
-
-                            VerticalLayout {
-                                alignment: center;
-
-                                WaveformDisplay {
-                                    width: 180px;
-                                    waveform: root.current-osc.waveform;
-                                    phase: root.current-osc.phase;
-                                    cycle-path(waveform, phase, width, height) => {
-                                        return root.oscillator-cycle-path(waveform, phase, width, height);
-                                    }
-                                }
-                            }
-
-                            SynthKnob {
-                                value: root.current-osc.phase;
-                                label: "PHASE";
-                                // The value text ends well above the knob's
-                                // full height; trim it inside the panel.
-                                height: 88px;
-                                parameter-id: 2;
-                                value-text: root.current-osc.phase-text;
-                                changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
-                                released(id) => { root.osc-released(root.current-oscillator, id); }
-                            }
-
-                            SynthKnob {
-                                value: root.current-osc.pitch;
-                                label: "PITCH";
-                                height: 88px;
-                                parameter-id: 0;
-                                value-text: root.current-osc.pitch-text;
-                                mod-target: 2 * root.current-oscillator;
-                                modulation: root.knob-mods[2 * root.current-oscillator];
-                                mod-drag-active: mod-handle.dragging;
-                                mod-drag-x: mod-handle.pointer-x;
-                                mod-drag-y: mod-handle.pointer-y;
-                                mod-drop-count: mod-handle.drop-count;
-                                mod-dropped(target) => { root.mod-assign(target); }
-                                changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
-                                released(id) => { root.osc-released(root.current-oscillator, id); }
-                                mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
-                                mod-depth-released(target) => { root.mod-depth-released(target); }
-                            }
-
-                            SynthKnob {
-                                value: root.current-osc.level;
-                                label: "LEVEL";
-                                height: 88px;
-                                parameter-id: 1;
-                                value-text: root.current-osc.level-text;
-                                mod-target: 2 * root.current-oscillator + 1;
-                                modulation: root.knob-mods[2 * root.current-oscillator + 1];
-                                mod-drag-active: mod-handle.dragging;
-                                mod-drag-x: mod-handle.pointer-x;
-                                mod-drag-y: mod-handle.pointer-y;
-                                mod-drop-count: mod-handle.drop-count;
-                                mod-dropped(target) => { root.mod-assign(target); }
-                                changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
-                                released(id) => { root.osc-released(root.current-oscillator, id); }
-                                mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
-                                mod-depth-released(target) => { root.mod-depth-released(target); }
-                            }
-                        }
-                    }
-                }
-            }
-
-            HorizontalLayout {
-                spacing: 12px;
-                alignment: start;
-
-                Text {
-                    text: "FILTER";
-                    font-size: 10px;
-                    font-weight: 700;
-                    color: #9299a8;
-                    vertical-alignment: center;
-                }
-
-                VerticalLayout {
-                    alignment: center;
-
-                    Dropdown {
-                        options: ["Low Pass", "High Pass", "Band Pass"];
-                        selected-index: root.filter-type;
-                        selected(index) => { root.filter-type-selected(index); }
-                    }
-                }
-
-                VerticalLayout {
-                    alignment: center;
-
-                    FilterResponseDisplay {
-                        filter-type: root.filter-type;
-                        cutoff: root.filter-cutoff;
-                        q: root.filter-q;
-                        mix: root.filter-mix;
-                        response-path(filter-type, cutoff, q, mix, width, height) => {
-                            return root.filter-response-path(filter-type, cutoff, q, mix, width, height);
-                        }
-                    }
-                }
-
-                SynthKnob {
-                    value: root.filter-cutoff;
-                    label: "CUTOFF";
-                    parameter-id: 0;
-                    value-text: root.filter-cutoff-text;
-                    mod-target: root.cutoff-mod-target;
-                    modulation: root.knob-mods[root.cutoff-mod-target];
-                    mod-drag-active: mod-handle.dragging;
-                    mod-drag-x: mod-handle.pointer-x;
-                    mod-drag-y: mod-handle.pointer-y;
-                    mod-drop-count: mod-handle.drop-count;
-                    mod-dropped(target) => { root.mod-assign(target); }
-                    changed(id, value) => { root.filter-changed(id, value); }
-                    released(id) => { root.filter-released(id); }
-                    mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
-                    mod-depth-released(target) => { root.mod-depth-released(target); }
-                }
-
-                SynthKnob {
-                    value: root.filter-q;
-                    label: "Q";
-                    parameter-id: 1;
-                    value-text: root.filter-q-text;
-                    mod-target: root.cutoff-mod-target + 1;
-                    modulation: root.knob-mods[root.cutoff-mod-target + 1];
-                    mod-drag-active: mod-handle.dragging;
-                    mod-drag-x: mod-handle.pointer-x;
-                    mod-drag-y: mod-handle.pointer-y;
-                    mod-drop-count: mod-handle.drop-count;
-                    mod-dropped(target) => { root.mod-assign(target); }
-                    changed(id, value) => { root.filter-changed(id, value); }
-                    released(id) => { root.filter-released(id); }
-                    mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
-                    mod-depth-released(target) => { root.mod-depth-released(target); }
-                }
-
-                SynthKnob {
-                    value: root.filter-mix;
-                    label: "MIX";
-                    parameter-id: 2;
-                    value-text: root.filter-mix-text;
-                    mod-target: root.cutoff-mod-target + 2;
-                    modulation: root.knob-mods[root.cutoff-mod-target + 2];
-                    mod-drag-active: mod-handle.dragging;
-                    mod-drag-x: mod-handle.pointer-x;
-                    mod-drag-y: mod-handle.pointer-y;
-                    mod-drop-count: mod-handle.drop-count;
-                    mod-dropped(target) => { root.mod-assign(target); }
-                    changed(id, value) => { root.filter-changed(id, value); }
-                    released(id) => { root.filter-released(id); }
-                    mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
-                    mod-depth-released(target) => { root.mod-depth-released(target); }
-                }
-            }
-
-            VerticalLayout {
-                spacing: 0px;
-
-                HorizontalLayout {
-                    spacing: 12px;
-                    alignment: start;
-                    Text {
-                        text: "MODULATORS";
-                        font-size: 10px;
-                        font-weight: 700;
-                        color: #9299a8;
-                        vertical-alignment: center;
-                    }
-                    if root.lfo-count < root.max-lfos: TextButton {
-                        text: "+ ADD";
-                        clicked => {
-                            root.selected-lfo = root.lfo-count;
-                            root.lfo-add();
-                        }
-                    }
-                }
-
-                HorizontalLayout {
-                    padding-left: 8px;
-                    spacing: 2px;
-                    alignment: start;
-                    for index in root.lfo-count: TabButton {
-                        text: "LFO " + (index + 1);
-                        selected: index == root.current-lfo;
-                        closable: true;
-                        clicked => { root.selected-lfo = index; }
-                        close => {
-                            if root.selected-lfo > index {
-                                root.selected-lfo -= 1;
-                            }
-                            root.lfo-remove(index);
-                        }
-                    }
-                }
-
-                if root.lfo-count == 0: Text {
-                    text: "No modulators. Click + ADD to create an LFO.";
-                    font-size: 10px;
-                    color: #6f7685;
-                    height: 32px;
-                    vertical-alignment: center;
-                }
-
-                Rectangle {
-                    background: #20232b;
-                    border-radius: 8px;
-                    visible: root.lfo-count > 0;
-                    min-height: 0px;
-                    max-height: root.lfo-count > 0 ? 1000px : 0px;
-                    vertical-stretch: 0;
 
                     VerticalLayout {
-                        padding-top: 8px;
-                        padding-bottom: 8px;
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        spacing: 8px;
+                        alignment: center;
+
+                        Dropdown {
+                            width: 72px;
+                            options: ["Mono", "2", "3", "4", "5", "6", "7", "8"];
+                            selected-index: root.voices - 1;
+                            selected(index) => { root.voices-selected(index + 1); }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 16px;
+
+                    VerticalLayout {
+                        min-width: 0px;
+                        preferred-width: 0px;
+                        horizontal-stretch: 1;
+                        alignment: start;
+                        spacing: 4px;
 
                         HorizontalLayout {
+                            height: 22px;
                             spacing: 12px;
                             alignment: start;
 
-                            VerticalLayout {
-                                alignment: center;
-
-                                Dropdown {
-                                    options: ["Sine", "Square", "Triangle", "Sawtooth"];
-                                    selected-index: root.lfo-shape;
-                                    selected(index) => { root.lfo-shape-selected(index); }
-                                }
-                            }
-
-                            VerticalLayout {
-                                alignment: center;
-
-                                WaveformDisplay {
-                                    waveform: root.lfo-shape;
-                                    markers: root.lfo-markers;
-                                    cycle-path(waveform, _, width, height) => {
-                                        return root.lfo-cycle-path(waveform, width, height);
-                                    }
-                                }
-                            }
-
-                            SynthKnob {
-                                value: root.lfo-rate;
-                                label: "RATE";
-                                value-text: root.lfo-rate-text;
-                                changed(_, value) => { root.lfo-rate-changed(value); }
-                                released(_) => { root.lfo-rate-released(); }
-                            }
-
-                            Rectangle { width: 16px; }
-
                             Text {
-                                text: "MODE";
+                                text: "OSCILLATORS";
                                 font-size: 10px;
                                 font-weight: 700;
                                 color: #9299a8;
                                 vertical-alignment: center;
                             }
 
-                            VerticalLayout {
-                                alignment: center;
-
-                                Dropdown {
-                                    width: 88px;
-                                    options: ["Trigger", "Sync"];
-                                    selected-index: root.lfo-mode;
-                                    selected(index) => { root.lfo-mode-selected(index); }
+                            if root.oscillators.length < root.max-oscillators: TextButton {
+                                text: "+ ADD";
+                                clicked => {
+                                    root.selected-oscillator = root.oscillators.length;
+                                    root.oscillator-add();
                                 }
                             }
                         }
 
                         VerticalLayout {
-                            spacing: 8px;
+                            spacing: 0px;
 
                             HorizontalLayout {
-                                spacing: 12px;
+                                padding-left: 8px;
+                                spacing: 2px;
                                 alignment: start;
 
-                                Text {
-                                    text: "ROUTING";
-                                    font-size: 10px;
-                                    font-weight: 700;
-                                    color: #9299a8;
-                                    vertical-alignment: center;
-                                }
-
-                                mod-handle := ModDragHandle { }
-
-                                Text {
-                                    text: "Drag onto PITCH, LEVEL, CUTOFF, Q or MIX · Alt-drag for depth · Shift for fine";
-                                    font-size: 9px;
-                                    color: #6f7685;
-                                    vertical-alignment: center;
+                                for osc[index] in root.oscillators: TabButton {
+                                    text: "OSC " + (index + 1);
+                                    selected: index == root.current-oscillator;
+                                    closable: root.oscillators.length > 1;
+                                    clicked => { root.selected-oscillator = index; }
+                                    close => {
+                                        if root.selected-oscillator > index {
+                                            root.selected-oscillator -= 1;
+                                        }
+                                        root.oscillator-remove(index);
+                                    }
                                 }
                             }
 
                             Rectangle {
-                                height: 62px;
+                                background: #20232b;
+                                border-radius: 8px;
 
-                                for slot[index] in root.mod-slots: ModRouteRow {
-                                    x: (parent.width - 672px) / 2 + mod(index, 2) * 342px;
-                                    y: floor(index / 2) * 34px;
-                                    slot: slot;
-                                    destinations: root.mod-destinations;
-                                    destination-selected(destination) => { root.mod-destination-selected(index, destination); }
-                                    amount-changed(amount) => { root.mod-amount-changed(index, amount); }
-                                    amount-released => { root.mod-amount-released(index); }
-                                    remove => { root.mod-remove(index); }
+                                VerticalLayout {
+                                    padding: 12px;
+                                    spacing: 10px;
+
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        Dropdown {
+                                            options: ["Sine", "Square", "Triangle", "Sawtooth"];
+                                            selected-index: root.current-osc.waveform;
+                                            selected(waveform) => { root.oscillator-selected(root.current-oscillator, waveform); }
+                                        }
+                                    }
+
+                                    WaveformDisplay {
+                                        horizontal-stretch: 1;
+                                        height: 160px;
+                                        waveform: root.current-osc.waveform;
+                                        phase: root.current-osc.phase;
+                                        cycle-path(waveform, phase, width, height) => {
+                                            return root.oscillator-cycle-path(waveform, phase, width, height);
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        alignment: center;
+
+                                        SynthKnob {
+                                            value: root.current-osc.phase;
+                                            label: "PHASE";
+                                            // The value text ends well above the knob's
+                                            // full height; trim it inside the panel.
+                                            height: 88px;
+                                            parameter-id: 2;
+                                            value-text: root.current-osc.phase-text;
+                                            changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
+                                            released(id) => { root.osc-released(root.current-oscillator, id); }
+                                        }
+
+                                        SynthKnob {
+                                            value: root.current-osc.pitch;
+                                            label: "PITCH";
+                                            height: 88px;
+                                            parameter-id: 0;
+                                            value-text: root.current-osc.pitch-text;
+                                            mod-target: 2 * root.current-oscillator;
+                                            modulation: root.knob-mods[2 * root.current-oscillator];
+                                            mod-drag-active: mod-handle.dragging;
+                                            mod-drag-x: mod-handle.pointer-x;
+                                            mod-drag-y: mod-handle.pointer-y;
+                                            mod-drop-count: mod-handle.drop-count;
+                                            mod-dropped(target) => { root.mod-assign(target); }
+                                            changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
+                                            released(id) => { root.osc-released(root.current-oscillator, id); }
+                                            mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                                            mod-depth-released(target) => { root.mod-depth-released(target); }
+                                        }
+
+                                        SynthKnob {
+                                            value: root.current-osc.level;
+                                            label: "LEVEL";
+                                            height: 88px;
+                                            parameter-id: 1;
+                                            value-text: root.current-osc.level-text;
+                                            mod-target: 2 * root.current-oscillator + 1;
+                                            modulation: root.knob-mods[2 * root.current-oscillator + 1];
+                                            mod-drag-active: mod-handle.dragging;
+                                            mod-drag-x: mod-handle.pointer-x;
+                                            mod-drag-y: mod-handle.pointer-y;
+                                            mod-drop-count: mod-handle.drop-count;
+                                            mod-dropped(target) => { root.mod-assign(target); }
+                                            changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
+                                            released(id) => { root.osc-released(root.current-oscillator, id); }
+                                            mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                                            mod-depth-released(target) => { root.mod-depth-released(target); }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+
+                    VerticalLayout {
+                        min-width: 0px;
+                        preferred-width: 0px;
+                        horizontal-stretch: 1;
+                        alignment: start;
+                        spacing: 4px;
+
+                        HorizontalLayout {
+                            height: 22px;
+                            spacing: 12px;
+                            alignment: start;
+                            Text {
+                                text: "MODULATORS";
+                                font-size: 10px;
+                                font-weight: 700;
+                                color: #9299a8;
+                                vertical-alignment: center;
+                            }
+                            if root.lfo-count < root.max-lfos: TextButton {
+                                text: "+ ADD";
+                                clicked => {
+                                    root.selected-lfo = root.lfo-count;
+                                    root.lfo-add();
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 0px;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                spacing: 2px;
+                                alignment: start;
+                                for index in root.lfo-count: TabButton {
+                                    text: "LFO " + (index + 1);
+                                    selected: index == root.current-lfo;
+                                    closable: true;
+                                    clicked => { root.selected-lfo = index; }
+                                    close => {
+                                        if root.selected-lfo > index {
+                                            root.selected-lfo -= 1;
+                                        }
+                                        root.lfo-remove(index);
+                                    }
+                                }
+                            }
+
+                            if root.lfo-count == 0: Text {
+                                text: "No modulators. Click + ADD to create an LFO.";
+                                font-size: 10px;
+                                color: #6f7685;
+                                height: 32px;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle {
+                                background: #20232b;
+                                border-radius: 8px;
+                                visible: root.lfo-count > 0;
+                                min-height: 0px;
+                                max-height: root.lfo-count > 0 ? 1000px : 0px;
+                                vertical-stretch: 0;
+
+                                VerticalLayout {
+                                    padding: 12px;
+                                    spacing: 10px;
+
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        alignment: start;
+
+                                        Dropdown {
+                                            options: ["Sine", "Square", "Triangle", "Sawtooth"];
+                                            selected-index: root.lfo-shape;
+                                            selected(index) => { root.lfo-shape-selected(index); }
+                                        }
+
+                                        Text {
+                                            text: "MODE";
+                                            font-size: 10px;
+                                            font-weight: 700;
+                                            color: #9299a8;
+                                            vertical-alignment: center;
+                                        }
+
+                                        Dropdown {
+                                            width: 88px;
+                                            options: ["Trigger", "Sync"];
+                                            selected-index: root.lfo-mode;
+                                            selected(index) => { root.lfo-mode-selected(index); }
+                                        }
+                                    }
+
+                                    WaveformDisplay {
+                                        horizontal-stretch: 1;
+                                        height: 160px;
+                                        waveform: root.lfo-shape;
+                                        markers: root.lfo-markers;
+                                        cycle-path(waveform, _, width, height) => {
+                                            return root.lfo-cycle-path(waveform, width, height);
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        alignment: center;
+
+                                        SynthKnob {
+                                            height: 88px;
+                                            value: root.lfo-rate;
+                                            label: "RATE";
+                                            value-text: root.lfo-rate-text;
+                                            changed(_, value) => { root.lfo-rate-changed(value); }
+                                            released(_) => { root.lfo-rate-released(); }
+                                        }
+                                    }
+
+                                    VerticalLayout {
+                                        spacing: 8px;
+
+                                        HorizontalLayout {
+                                            spacing: 12px;
+                                            alignment: start;
+
+                                            Text {
+                                                text: "ROUTING";
+                                                font-size: 10px;
+                                                font-weight: 700;
+                                                color: #9299a8;
+                                                vertical-alignment: center;
+                                            }
+
+                                            mod-handle := ModDragHandle { }
+
+                                        }
+
+                                        Text {
+                                            text: "Drag onto PITCH, LEVEL, CUTOFF, Q or MIX\nAlt-drag for depth · Shift for fine";
+                                            font-size: 9px;
+                                            color: #6f7685;
+                                        }
+
+                                        Rectangle {
+                                            height: 130px;
+
+                                            for slot[index] in root.mod-slots: ModRouteRow {
+                                                x: (parent.width - self.width) / 2;
+                                                y: index * 34px;
+                                                slot: slot;
+                                                destinations: root.mod-destinations;
+                                                destination-selected(destination) => { root.mod-destination-selected(index, destination); }
+                                                amount-changed(amount) => { root.mod-amount-changed(index, amount); }
+                                                amount-released => { root.mod-amount-released(index); }
+                                                remove => { root.mod-remove(index); }
+                                            }
+                                        }
+                                    }
+
+                                }
+                            }
+                        }
+                    }
+
+                }
+
+                HorizontalLayout {
+                    spacing: 12px;
+
+                    Text {
+                        text: "FILTER";
+                        font-size: 10px;
+                        font-weight: 700;
+                        color: #9299a8;
+                        vertical-alignment: center;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+
+                        Dropdown {
+                            options: ["Low Pass", "High Pass", "Band Pass"];
+                            selected-index: root.filter-type;
+                            selected(index) => { root.filter-type-selected(index); }
+                        }
+                    }
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+
+                        FilterResponseDisplay {
+                            horizontal-stretch: 1;
+                            filter-type: root.filter-type;
+                            cutoff: root.filter-cutoff;
+                            q: root.filter-q;
+                            mix: root.filter-mix;
+                            response-path(filter-type, cutoff, q, mix, width, height) => {
+                                return root.filter-response-path(filter-type, cutoff, q, mix, width, height);
+                            }
+                        }
+                    }
+
+                    SynthKnob {
+                        value: root.filter-cutoff;
+                        label: "CUTOFF";
+                        parameter-id: 0;
+                        value-text: root.filter-cutoff-text;
+                        mod-target: root.cutoff-mod-target;
+                        modulation: root.knob-mods[root.cutoff-mod-target];
+                        mod-drag-active: mod-handle.dragging;
+                        mod-drag-x: mod-handle.pointer-x;
+                        mod-drag-y: mod-handle.pointer-y;
+                        mod-drop-count: mod-handle.drop-count;
+                        mod-dropped(target) => { root.mod-assign(target); }
+                        changed(id, value) => { root.filter-changed(id, value); }
+                        released(id) => { root.filter-released(id); }
+                        mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                        mod-depth-released(target) => { root.mod-depth-released(target); }
+                    }
+
+                    SynthKnob {
+                        value: root.filter-q;
+                        label: "Q";
+                        parameter-id: 1;
+                        value-text: root.filter-q-text;
+                        mod-target: root.cutoff-mod-target + 1;
+                        modulation: root.knob-mods[root.cutoff-mod-target + 1];
+                        mod-drag-active: mod-handle.dragging;
+                        mod-drag-x: mod-handle.pointer-x;
+                        mod-drag-y: mod-handle.pointer-y;
+                        mod-drop-count: mod-handle.drop-count;
+                        mod-dropped(target) => { root.mod-assign(target); }
+                        changed(id, value) => { root.filter-changed(id, value); }
+                        released(id) => { root.filter-released(id); }
+                        mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                        mod-depth-released(target) => { root.mod-depth-released(target); }
+                    }
+
+                    SynthKnob {
+                        value: root.filter-mix;
+                        label: "MIX";
+                        parameter-id: 2;
+                        value-text: root.filter-mix-text;
+                        mod-target: root.cutoff-mod-target + 2;
+                        modulation: root.knob-mods[root.cutoff-mod-target + 2];
+                        mod-drag-active: mod-handle.dragging;
+                        mod-drag-x: mod-handle.pointer-x;
+                        mod-drag-y: mod-handle.pointer-y;
+                        mod-drop-count: mod-handle.drop-count;
+                        mod-dropped(target) => { root.mod-assign(target); }
+                        changed(id, value) => { root.filter-changed(id, value); }
+                        released(id) => { root.filter-released(id); }
+                        mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                        mod-depth-released(target) => { root.mod-depth-released(target); }
+                    }
+                }
+
+                AdsrEnvelopePanel {
+                    width: 100%;
+                    height: 360px;
+                    attack <=> root.attack;
+                    decay <=> root.decay;
+                    sustain <=> root.sustain;
+                    sustain-level: root.sustain-level;
+                    release <=> root.release;
+                    attack-text: root.attack-text;
+                    decay-text: root.decay-text;
+                    sustain-text: root.sustain-text;
+                    release-text: root.release-text;
+                    pressed(id) => { root.envelope-pressed(id); }
+                    changed(id, value) => { root.envelope-changed(id, value); }
+                    sustain-level-changed(value) => { root.envelope-sustain-level-changed(value); }
+                    released(id) => { root.envelope-released(id); }
                 }
             }
-
-            AdsrEnvelopePanel {
-                width: 100%;
-                height: 360px;
-                attack <=> root.attack;
-                decay <=> root.decay;
-                sustain <=> root.sustain;
-                sustain-level: root.sustain-level;
-                release <=> root.release;
-                attack-text: root.attack-text;
-                decay-text: root.decay-text;
-                sustain-text: root.sustain-text;
-                release-text: root.release-text;
-                pressed(id) => { root.envelope-pressed(id); }
-                changed(id, value) => { root.envelope-changed(id, value); }
-                sustain-level-changed(value) => { root.envelope-sustain-level-changed(value); }
-                released(id) => { root.envelope-released(id); }
-            }
-        }
         }
     }
 
