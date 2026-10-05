@@ -1,7 +1,7 @@
-import { EnvelopeTimeScale, FilterResponseDisplay, AdsrEnvelopePanel, Dropdown, KnobModulation, ModDragHandle, ModRouteRow, ModRouteSlot, PositionMarker, SynthKnob, TabButton, TextButton, WaveformDisplay } from "controls.slint";
+import { EnvelopeTimeScale, FilterResponseDisplay, AdsrEnvelopePanel, Dropdown, KnobModulation, LfoCurveHandle, LfoNode, LfoShapeEditor, ModDragHandle, ModRouteRow, ModRouteSlot, PositionMarker, SynthKnob, TabButton, TextButton, WaveformDisplay } from "controls.slint";
 export { EnvelopeTimeScale }
 
-export { KnobModulation, ModRouteSlot, PositionMarker }
+export { KnobModulation, LfoCurveHandle, LfoNode, ModRouteSlot, PositionMarker }
 import { EffectRow, EffectCard } from "effects.slint";
 export { EffectRow }
 
@@ -182,7 +182,19 @@ export component SynthUi inherits Window {
     callback lfo-rate-changed(float);
     callback lfo-rate-released();
     callback lfo-mode-selected(int);
-    pure callback lfo-cycle-path(int, float, float) -> string;
+    // Node-edited shape of the selected LFO; see `LfoShapeView` in editor.rs.
+    in property <[LfoNode]> lfo-nodes;
+    in property <[LfoCurveHandle]> lfo-curve-handles;
+    in property <int> lfo-shape-revision;
+    in property <bool> lfo-smooth;
+    callback lfo-node-moved(int, float, float, bool);
+    callback lfo-node-added(float, float, bool);
+    callback lfo-node-removed(int);
+    callback lfo-curve-pressed(int);
+    callback lfo-curve-dragged(int, float);
+    callback lfo-curve-reset(int);
+    callback lfo-smooth-toggled();
+    pure callback lfo-shape-path(int, float, float, bool) -> string;
     // LFO routing. Knob destination indices follow `ModDestination::ALL`:
     // oscillator n's pitch is 2n and level 2n + 1, then cutoff and Q after
     // the last oscillator's. Routing slot destinations index
@@ -592,8 +604,9 @@ export component SynthUi inherits Window {
                                             spacing: 12px;
                                             alignment: start;
 
+                                            // Order matches `LFO_PRESET_NAMES` in editor.rs.
                                             Dropdown {
-                                                options: ["Sine", "Square", "Triangle", "Sawtooth"];
+                                                options: ["Sine", "Square", "Triangle", "Sawtooth", "Saw Down", "Exp Rise", "Exp Fall", "Steps", "Custom"];
                                                 selected-index: root.lfo-shape;
                                                 selected(index) => { root.lfo-shape-selected(index); }
                                             }
@@ -612,16 +625,41 @@ export component SynthUi inherits Window {
                                                 selected-index: root.lfo-mode;
                                                 selected(index) => { root.lfo-mode-selected(index); }
                                             }
+
+                                            TextButton {
+                                                text: "SMOOTH";
+                                                checked: root.lfo-smooth;
+                                                clicked => { root.lfo-smooth-toggled(); }
+                                            }
+
+                                            Text {
+                                                horizontal-stretch: 1;
+                                                min-width: 0px;
+                                                text: "Dbl-click: add/remove · Shift: snap";
+                                                font-size: 9px;
+                                                color: #6f7685;
+                                                horizontal-alignment: right;
+                                                vertical-alignment: center;
+                                                overflow: elide;
+                                            }
                                         }
 
-                                        WaveformDisplay {
+                                        LfoShapeEditor {
                                             horizontal-stretch: 1;
                                             height: 160px;
-                                            waveform: root.lfo-shape;
+                                            nodes: root.lfo-nodes;
+                                            curve-handles: root.lfo-curve-handles;
+                                            revision: root.lfo-shape-revision;
                                             markers: root.lfo-markers;
-                                            cycle-path(waveform, _, width, height) => {
-                                                return root.lfo-cycle-path(waveform, width, height);
+                                            shape-path(revision, width, height, filled) => {
+                                                return root.lfo-shape-path(revision, width, height, filled);
                                             }
+                                            node-moved(index, x, y, snap) => { root.lfo-node-moved(index, x, y, snap); }
+                                            node-added(x, y, snap) => { root.lfo-node-added(x, y, snap); }
+                                            node-removed(index) => { root.lfo-node-removed(index); }
+                                            curve-pressed(index) => { root.lfo-curve-pressed(index); }
+                                            curve-dragged(index, amount) => { root.lfo-curve-dragged(index, amount); }
+                                            curve-reset(index) => { root.lfo-curve-reset(index); }
                                         }
 
                                         HorizontalLayout {

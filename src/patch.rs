@@ -4,7 +4,8 @@
 //! A patch stores plain (unnormalized) values keyed by the stable parameter
 //! IDs, plus each parameter's name for readability. Loading tolerates older
 //! and newer files: parameters missing from a file fall back to their
-//! default, and unknown IDs are ignored.
+//! default, and unknown IDs are ignored. Node-edited LFO shapes are stored
+//! alongside the parameters; files without them play the Shape presets.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -14,6 +15,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use truce::params::{ParamFlags, ParamInfo, Params};
+
+use crate::engine::{LfoPoint, LfoShape, MAX_LFOS};
+use crate::plugin::CustomLfoShapes;
 
 /// Name shown for the built-in initial patch. Reserved: user patches may not
 /// use it.
@@ -85,10 +89,12 @@ fn is_patch_param(info: &ParamInfo) -> bool {
     !info.flags.contains(ParamFlags::READONLY)
 }
 
-/// A snapshot of plain parameter values keyed by parameter ID.
+/// A snapshot of plain parameter values keyed by parameter ID, plus the
+/// custom LFO shapes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Patch {
     values: HashMap<u32, f64>,
+    lfo_shapes: CustomLfoShapes,
 }
 
 impl Patch {
@@ -106,7 +112,21 @@ impl Patch {
             .filter(|info| is_patch_param(info))
             .filter_map(|info| params.get_plain(info.id).map(|value| (info.id, value)))
             .collect();
-        Self { values }
+        Self {
+            values,
+            lfo_shapes: CustomLfoShapes::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_lfo_shapes(mut self, lfo_shapes: CustomLfoShapes) -> Self {
+        self.lfo_shapes = lfo_shapes;
+        self
+    }
+
+    #[must_use]
+    pub fn lfo_shapes(&self) -> CustomLfoShapes {
+        self.lfo_shapes
     }
 
     /// Normalized target value for every patchable parameter. Parameters the
@@ -150,6 +170,23 @@ impl Patch {
             version: PATCH_VERSION,
             name: name.to_owned(),
             parameters,
+            lfo_shapes: self
+                .lfo_shapes
+                .0
+                .iter()
+                .enumerate()
+                .filter_map(|(index, shape)| {
+                    shape.map(|shape| PatchFileLfoShape {
+                        index,
+                        smooth: shape.is_smooth(),
+                        points: shape
+                            .points()
+                            .iter()
+                            .map(|point| [point.x, point.y, point.curve])
+                            .collect(),
+                    })
+                })
+                .collect(),
         };
         serde_json::to_string_pretty(&file).map_err(|error| PatchError::Format(error.to_string()))
     }
@@ -166,12 +203,26 @@ impl Patch {
                 file.version
             )));
         }
+        let mut lfo_shapes = CustomLfoShapes::default();
+        for shape in file
+            .lfo_shapes
+            .into_iter()
+            .filter(|shape| shape.index < MAX_LFOS)
+        {
+            let points: Vec<_> = shape
+                .points
+                .iter()
+                .map(|&[x, y, curve]| LfoPoint::curved(x, y, curve))
+                .collect();
+            lfo_shapes.0[shape.index] = Some(LfoShape::new(&points, shape.smooth));
+        }
         Ok(Self {
             values: file
                 .parameters
                 .into_iter()
                 .map(|param| (param.id, param.value))
                 .collect(),
+            lfo_shapes,
         })
     }
 }
@@ -183,6 +234,17 @@ struct PatchFile {
     #[serde(default)]
     name: String,
     parameters: Vec<PatchFileParam>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    lfo_shapes: Vec<PatchFileLfoShape>,
+}
+
+/// A node-edited LFO shape; `points` are `[x, y, curve]`.
+#[derive(Serialize, Deserialize)]
+struct PatchFileLfoShape {
+    index: usize,
+    #[serde(default)]
+    smooth: bool,
+    points: Vec<[f32; 3]>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -405,6 +467,37 @@ pub(crate) mod tests {
             let actual = target.get_normalized(info.id).unwrap();
             assert!((expected - actual).abs() < 1e-9, "{} differs", info.name);
         }
+    }
+
+    #[test]
+    fn custom_lfo_shapes_round_trip_through_json() {
+        use crate::engine::{LfoPoint, LfoShape};
+        let params = SynthParams::default();
+        let plain = Patch::capture(&params).to_json("Plain", &params).unwrap();
+        assert!(!plain.contains("lfo_shapes"));
+        assert_eq!(
+            Patch::from_json(&plain).unwrap().lfo_shapes(),
+            CustomLfoShapes::default()
+        );
+
+        let shape = LfoShape::new(
+            &[LfoPoint::curved(0.1, -0.5, -2.0), LfoPoint::new(0.6, 1.0)],
+            true,
+        );
+        let mut shapes = CustomLfoShapes::default();
+        shapes.0[2] = Some(shape);
+        let json = Patch::capture(&params)
+            .with_lfo_shapes(shapes)
+            .to_json("Shaped", &params)
+            .unwrap();
+        assert_eq!(Patch::from_json(&json).unwrap().lfo_shapes(), shapes);
+
+        let foreign = r#"{"format":"synthol-patch","version":1,"parameters":[],
+            "lfo_shapes":[{"index":99,"smooth":false,"points":[[0.0,1.0,0.0]]}]}"#;
+        assert_eq!(
+            Patch::from_json(foreign).unwrap().lfo_shapes(),
+            CustomLfoShapes::default()
+        );
     }
 
     #[test]

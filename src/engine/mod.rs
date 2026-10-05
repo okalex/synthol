@@ -6,14 +6,14 @@ mod voice;
 
 pub use midi::MidiEvent;
 
-pub use effects::{EffectChain, MAX_EFFECTS};
 use effects::EffectControls;
+pub use effects::{EffectChain, MAX_EFFECTS};
 use modulation::ModDepths;
 pub use modulation::{MOD_SLOTS, ModDestination, ModRoute};
 use node::envelope::AdsrSettings;
 pub use node::filter::{FilterMode, FilterSettings};
 use node::lfo::Lfo;
-pub use node::lfo::{LfoMode, LfoSettings};
+pub use node::lfo::{LfoMode, LfoPoint, LfoSettings, LfoShape, MAX_LFO_POINTS};
 pub use node::oscillator::Waveform;
 use voice::{Voice, VoiceControls};
 
@@ -843,7 +843,7 @@ mod tests {
 
     fn lfo_settings(mode: super::LfoMode) -> super::LfoSettings {
         super::LfoSettings {
-            waveform: super::Waveform::Sine,
+            shape: super::LfoShape::from_waveform(super::Waveform::Sine),
             frequency_hz: 2.0,
             mode,
         }
@@ -1002,7 +1002,7 @@ mod tests {
             release: Duration::ZERO,
         });
         engine.set_lfo_settings(super::LfoSettings {
-            waveform: super::Waveform::Square,
+            shape: super::LfoShape::from_waveform(super::Waveform::Square),
             frequency_hz: 1.0,
             mode,
         });
@@ -1103,7 +1103,7 @@ mod tests {
                     engine.set_lfo(
                         index,
                         super::LfoSettings {
-                            waveform: super::Waveform::Square,
+                            shape: super::LfoShape::from_waveform(super::Waveform::Square),
                             frequency_hz: 1.0,
                             mode: if index % 2 == 0 {
                                 super::LfoMode::Sync

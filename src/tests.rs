@@ -1012,3 +1012,28 @@ fn patch_name_persists_with_host_state() {
     restored.load_persist(&saved);
     assert_eq!(restored.patch_name(), "Warm Pad");
 }
+
+#[test]
+fn custom_lfo_shapes_persist_with_host_state() {
+    use crate::engine::{LfoPoint, LfoShape};
+    use truce::params::Params;
+    let params = crate::SynthParams::default();
+    assert_eq!(params.custom_lfo_shape(1), None);
+    let shape = LfoShape::new(
+        &[
+            LfoPoint::curved(0.0, -1.0, 3.5),
+            LfoPoint::new(0.4, 0.75),
+            LfoPoint::new(0.9, 0.0),
+        ],
+        true,
+    );
+    params.set_custom_lfo_shape(1, Some(shape));
+    assert_eq!(params.lfo_shape(1), shape);
+    let saved = params.serialize_persist();
+
+    let restored = crate::SynthParams::default();
+    restored.load_persist(&saved);
+    assert_eq!(restored.custom_lfo_shape(0), None);
+    assert_eq!(restored.custom_lfo_shape(1), Some(shape));
+    assert_eq!(restored.lfo_shape(1), shape);
+}

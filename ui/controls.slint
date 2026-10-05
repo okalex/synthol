@@ -688,6 +688,230 @@ export component WaveformDisplay inherits Rectangle {
     }
 }
 
+// A node of an LfoShapeEditor: `x` through the cycle (0 to 1) and `y` from
+// -1 (bottom) to 1 (top).
+export struct LfoNode {
+    x: float,
+    y: float,
+}
+
+// The bend handle drawn at the middle of the segment leaving node `index`.
+export struct LfoCurveHandle {
+    x: float,
+    y: float,
+    visible: bool,
+}
+
+// Vital-style LFO shape editor. Drag nodes to move them, double-click empty
+// space to add one, double-click or right-click a node to remove it, and
+// drag the small ring in a segment up or down to bend it (double-click it to
+// straighten). Holding Shift snaps to the grid. The shape is drawn by the
+// `shape-path` callback (revision, width, height, filled) from Rust, which
+// bumps `revision` whenever the shape changes.
+export component LfoShapeEditor inherits Rectangle {
+    in property <[LfoNode]> nodes;
+    in property <[LfoCurveHandle]> curve-handles;
+    in property <int> revision;
+    in property <[PositionMarker]> markers;
+    pure callback shape-path(int, float, float, bool) -> string;
+    callback node-moved(int, float, float, bool);
+    callback node-added(float, float, bool);
+    callback node-removed(int);
+    callback curve-pressed(int);
+    callback curve-dragged(int, float);
+    callback curve-reset(int);
+
+    private property <length> plot-left: 10px;
+    private property <length> plot-right: self.width - 10px;
+    private property <length> plot-top: 10px;
+    private property <length> plot-bottom: self.height - 20px;
+    private property <length> plot-width: self.plot-right - self.plot-left;
+    private property <length> plot-height: self.plot-bottom - self.plot-top;
+
+    preferred-width: 220px;
+    height: 160px;
+    background: #111319;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: #30343d;
+
+    for fraction in [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]: Rectangle {
+        x: root.plot-left + root.plot-width * fraction;
+        y: root.plot-top;
+        width: 1px;
+        height: root.plot-height;
+        background: #20242c;
+    }
+
+    for fraction in [0.0, 0.25, 0.75, 1.0]: Rectangle {
+        x: root.plot-left;
+        y: root.plot-top + root.plot-height * fraction;
+        width: root.plot-width;
+        height: 1px;
+        background: #20242c;
+    }
+
+    Rectangle {
+        x: root.plot-left;
+        y: root.plot-top + root.plot-height / 2;
+        width: root.plot-width;
+        height: 1px;
+        background: #343943;
+    }
+
+    // Double-clicking empty space adds a node there.
+    TouchArea {
+        property <bool> snap: false;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                self.snap = event.modifiers.shift;
+            }
+        }
+        double-clicked => {
+            root.node-added(
+                (self.mouse-x - root.plot-left) / root.plot-width,
+                1.0 - 2.0 * (self.mouse-y - root.plot-top) / root.plot-height,
+                self.snap);
+        }
+    }
+
+    Path {
+        x: root.plot-left;
+        y: root.plot-top;
+        width: root.plot-width;
+        height: root.plot-height;
+        viewbox-width: root.plot-width / 1px;
+        viewbox-height: root.plot-height / 1px;
+        commands: root.shape-path(root.revision, root.plot-width / 1px, root.plot-height / 1px, true);
+        fill: #56a7ff22;
+    }
+
+    // As in WaveformDisplay, grown by one stroke width so the viewbox maps
+    // 1:1 onto the plot area's pixels.
+    Path {
+        x: root.plot-left - self.stroke-width / 2;
+        y: root.plot-top - self.stroke-width / 2;
+        width: root.plot-width + self.stroke-width;
+        height: root.plot-height + self.stroke-width;
+        viewbox-width: root.plot-width / 1px;
+        viewbox-height: root.plot-height / 1px;
+        commands: root.shape-path(root.revision, root.plot-width / 1px, root.plot-height / 1px, false);
+        stroke: #56a7ff;
+        stroke-width: 2px;
+    }
+
+    for marker in root.markers: Rectangle {
+        visible: marker.visible && !marker.newest;
+        x: root.plot-left + root.plot-width * clamp(marker.position, 0.0, 1.0) - 1px;
+        y: root.plot-top;
+        width: 2px;
+        height: root.plot-height;
+        background: #f2b84d;
+        opacity: 0.35;
+    }
+
+    for marker in root.markers: Rectangle {
+        visible: marker.visible && marker.newest;
+        x: root.plot-left + root.plot-width * clamp(marker.position, 0.0, 1.0) - 1px;
+        y: root.plot-top;
+        width: 2px;
+        height: root.plot-height;
+        background: #f2b84d;
+    }
+
+    for handle[index] in root.curve-handles: Rectangle {
+        visible: handle.visible;
+        x: root.plot-left + root.plot-width * handle.x - self.width / 2;
+        y: root.plot-top + root.plot-height * (1.0 - handle.y) / 2 - self.height / 2;
+        width: 18px;
+        height: 18px;
+
+        Rectangle {
+            x: 4px;
+            y: 4px;
+            width: 10px;
+            height: 10px;
+            border-radius: 5px;
+            border-width: 1.5px;
+            border-color: #56a7ff;
+            background: curve-touch.has-hover || curve-touch.pressed ? #56a7ff : #111319;
+        }
+
+        curve-touch := TouchArea {
+            mouse-cursor: ns-resize;
+            property <length> start-global-y;
+            moved => {
+                if self.pressed {
+                    root.curve-dragged(index,
+                        -(self.mouse-y + self.absolute-position.y - self.start-global-y) / (root.plot-height / 2));
+                }
+            }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    self.start-global-y = self.mouse-y + self.absolute-position.y;
+                    root.curve-pressed(index);
+                }
+            }
+            double-clicked => { root.curve-reset(index); }
+        }
+    }
+
+    for node[index] in root.nodes: Rectangle {
+        x: root.plot-left + root.plot-width * node.x - self.width / 2;
+        y: root.plot-top + root.plot-height * (1.0 - node.y) / 2 - self.height / 2;
+        width: 20px;
+        height: 20px;
+
+        Rectangle {
+            x: 4px;
+            y: 4px;
+            width: 12px;
+            height: 12px;
+            border-radius: 6px;
+            background: node-touch.pressed ? #ffffff : node-touch.has-hover ? #8cc4ff : #56a7ff;
+            border-width: 2px;
+            border-color: #e7f3ff;
+        }
+
+        node-touch := TouchArea {
+            mouse-cursor: move;
+            property <float> start-x;
+            property <float> start-y;
+            property <length> start-global-x;
+            property <length> start-global-y;
+            property <bool> snap;
+            moved => {
+                if self.pressed {
+                    root.node-moved(index,
+                        self.start-x + (self.mouse-x + self.absolute-position.x - self.start-global-x) / root.plot-width,
+                        self.start-y - 2.0 * (self.mouse-y + self.absolute-position.y - self.start-global-y) / root.plot-height,
+                        self.snap);
+                }
+            }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    self.start-x = node.x;
+                    self.start-y = node.y;
+                    self.start-global-x = self.mouse-x + self.absolute-position.x;
+                    self.start-global-y = self.mouse-y + self.absolute-position.y;
+                    self.snap = event.modifiers.shift;
+                } else if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                    root.node-removed(index);
+                }
+            }
+            double-clicked => { root.node-removed(index); }
+        }
+    }
+
+    for label[index] in ["0°", "180°", "360°"]: Text {
+        x: root.plot-left + root.plot-width * index / 2 - self.preferred-width * index / 2;
+        y: root.plot-bottom + 4px;
+        text: label;
+        font-size: 9px;
+        color: #6f7685;
+    }
+}
+
 // Magnitude response from 20 Hz to 20 kHz on a log axis, +24 dB at the top to
 // -48 dB at the bottom. The path comes from Rust so it matches the DSP.
 export component FilterResponseDisplay inherits Rectangle {
@@ -1071,20 +1295,24 @@ export component ModDragHandle inherits Rectangle {
 export component TextButton inherits Rectangle {
     in property <string> text;
     in property <length> font-size: 10px;
+    // Shows the button as a switched-on toggle.
+    in property <bool> checked: false;
     callback clicked();
 
     min-width: label.preferred-width + 16px;
     height: 22px;
     border-radius: 4px;
-    background: touch.pressed ? #343943 : touch.has-hover ? #2f343e : #292d36;
+    background: root.checked
+        ? (touch.pressed ? #3d7fcc : touch.has-hover ? #5aa2f5 : #4d99f2)
+        : (touch.pressed ? #343943 : touch.has-hover ? #2f343e : #292d36);
     border-width: 1px;
-    border-color: #424754;
+    border-color: root.checked ? #7db6f7 : #424754;
 
     label := Text {
         text: root.text;
         font-size: root.font-size;
         font-weight: 700;
-        color: #c6cad4;
+        color: root.checked ? #ffffff : #c6cad4;
         horizontal-alignment: center;
         vertical-alignment: center;
     }

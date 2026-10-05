@@ -1,13 +1,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use truce::core::custom_state::StateCursor;
 use truce::prelude::*;
 
 use crate::editor;
 pub mod effects;
 use crate::engine::node::envelope::AdsrSettings;
 use crate::engine::{
-    FilterMode, LfoMode, LfoPositions, LfoSettings, MAX_ENVELOPES, MAX_LFOS,
+    FilterMode, LfoMode, LfoPoint, LfoPositions, LfoSettings, LfoShape, MAX_ENVELOPES, MAX_LFOS,
     MAX_OSCILLATORS, MAX_VOICES, MOD_SLOTS, MidiEvent, ModDestination, ModRoute, SynthEngine,
     Waveform,
 };
@@ -1026,21 +1027,103 @@ pub struct SynthParams {
     /// the built-in "Default" patch; see `crate::patch`.
     #[persist]
     pub patch_name: std::sync::RwLock<String>,
+    /// Node-edited LFO shapes, saved with the host session. `None` means the
+    /// LFO plays the preset chosen by its Shape parameter.
+    #[persist]
+    pub lfo_shapes: std::sync::RwLock<CustomLfoShapes>,
+}
+
+/// Per-LFO custom shapes; see [`SynthParams::lfo_shapes`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CustomLfoShapes(pub [Option<LfoShape>; MAX_LFOS]);
+
+impl CustomLfoShapes {
+    const FORMAT_VERSION: u8 = 1;
+}
+
+impl StateField for CustomLfoShapes {
+    fn write_field(&self, buf: &mut Vec<u8>) {
+        Self::FORMAT_VERSION.write_field(buf);
+        (self.0.len() as u32).write_field(buf);
+        for shape in &self.0 {
+            shape.is_some().write_field(buf);
+            let Some(shape) = shape else { continue };
+            shape.is_smooth().write_field(buf);
+            (shape.points().len() as u32).write_field(buf);
+            for point in shape.points() {
+                point.x.write_field(buf);
+                point.y.write_field(buf);
+                point.curve.write_field(buf);
+            }
+        }
+    }
+
+    fn read_field(cursor: &mut StateCursor) -> Option<Self> {
+        if u8::read_field(cursor)? != Self::FORMAT_VERSION {
+            return None;
+        }
+        let count = u32::read_field(cursor)? as usize;
+        let mut shapes = Self::default();
+        let mut points = [LfoPoint::default(); crate::engine::MAX_LFO_POINTS];
+        for index in 0..count {
+            if !bool::read_field(cursor)? {
+                continue;
+            }
+            let smooth = bool::read_field(cursor)?;
+            let len = u32::read_field(cursor)? as usize;
+            let mut kept = 0;
+            for _ in 0..len {
+                let point = LfoPoint::curved(
+                    f32::read_field(cursor)?,
+                    f32::read_field(cursor)?,
+                    f32::read_field(cursor)?,
+                );
+                if kept < points.len() {
+                    points[kept] = point;
+                    kept += 1;
+                }
+            }
+            if let Some(slot) = shapes.0.get_mut(index) {
+                *slot = Some(LfoShape::new(&points[..kept], smooth));
+            }
+        }
+        Some(shapes)
+    }
 }
 
 impl SynthParams {
     pub fn extra_effects(&self) -> [effects::EffectParams<'_>; 31] {
         [
-            self.filter_2.controls(), self.filter_3.controls(), self.filter_4.controls(),
-            self.filter_5.controls(), self.filter_6.controls(), self.filter_7.controls(),
-            self.filter_8.controls(), self.filter_9.controls(), self.filter_10.controls(),
-            self.filter_11.controls(), self.filter_12.controls(), self.filter_13.controls(),
-            self.filter_14.controls(), self.filter_15.controls(), self.filter_16.controls(),
-            self.filter_17.controls(), self.filter_18.controls(), self.filter_19.controls(),
-            self.filter_20.controls(), self.filter_21.controls(), self.filter_22.controls(),
-            self.filter_23.controls(), self.filter_24.controls(), self.filter_25.controls(),
-            self.filter_26.controls(), self.filter_27.controls(), self.filter_28.controls(),
-            self.filter_29.controls(), self.filter_30.controls(), self.filter_31.controls(),
+            self.filter_2.controls(),
+            self.filter_3.controls(),
+            self.filter_4.controls(),
+            self.filter_5.controls(),
+            self.filter_6.controls(),
+            self.filter_7.controls(),
+            self.filter_8.controls(),
+            self.filter_9.controls(),
+            self.filter_10.controls(),
+            self.filter_11.controls(),
+            self.filter_12.controls(),
+            self.filter_13.controls(),
+            self.filter_14.controls(),
+            self.filter_15.controls(),
+            self.filter_16.controls(),
+            self.filter_17.controls(),
+            self.filter_18.controls(),
+            self.filter_19.controls(),
+            self.filter_20.controls(),
+            self.filter_21.controls(),
+            self.filter_22.controls(),
+            self.filter_23.controls(),
+            self.filter_24.controls(),
+            self.filter_25.controls(),
+            self.filter_26.controls(),
+            self.filter_27.controls(),
+            self.filter_28.controls(),
+            self.filter_29.controls(),
+            self.filter_30.controls(),
+            self.filter_31.controls(),
             self.filter_32.controls(),
         ]
     }
@@ -1056,6 +1139,51 @@ impl SynthParams {
         if let Ok(mut current) = self.patch_name.write() {
             name.clone_into(&mut current);
         }
+    }
+
+    /// Node edits of every LFO; `None` entries play their Shape preset.
+    #[must_use]
+    pub fn custom_lfo_shapes(&self) -> CustomLfoShapes {
+        self.lfo_shapes
+            .read()
+            .map(|shapes| *shapes)
+            .unwrap_or_default()
+    }
+
+    pub fn set_custom_lfo_shapes(&self, shapes: CustomLfoShapes) {
+        if let Ok(mut current) = self.lfo_shapes.write() {
+            *current = shapes;
+        }
+    }
+
+    #[must_use]
+    pub fn custom_lfo_shape(&self, index: usize) -> Option<LfoShape> {
+        self.custom_lfo_shapes().0.get(index).copied().flatten()
+    }
+
+    pub fn set_custom_lfo_shape(&self, index: usize, shape: Option<LfoShape>) {
+        if let Ok(mut current) = self.lfo_shapes.write()
+            && let Some(slot) = current.0.get_mut(index)
+        {
+            *slot = shape;
+        }
+    }
+
+    /// The shape LFO `index` plays: its node edits, else its Shape preset.
+    #[must_use]
+    pub fn lfo_shape(&self, index: usize) -> LfoShape {
+        self.custom_lfo_shape(index)
+            .unwrap_or_else(|| LfoShape::from_waveform(self.lfo_presets()[index]))
+    }
+
+    fn lfo_presets(&self) -> [Waveform; MAX_LFOS] {
+        [
+            &self.lfo_shape,
+            &self.lfo_2_shape,
+            &self.lfo_3_shape,
+            &self.lfo_4_shape,
+        ]
+        .map(|shape| shape.value().into())
     }
 }
 
@@ -1081,7 +1209,12 @@ impl EnvelopeParamIds {
 
 pub const ENV_PARAMS: [EnvelopeParamIds; MAX_ENVELOPES] = [
     EnvelopeParamIds {
-        filters: [SynthParamsParamId::Env1Route1Filter, SynthParamsParamId::Env1Route2Filter, SynthParamsParamId::Env1Route3Filter, SynthParamsParamId::Env1Route4Filter],
+        filters: [
+            SynthParamsParamId::Env1Route1Filter,
+            SynthParamsParamId::Env1Route2Filter,
+            SynthParamsParamId::Env1Route3Filter,
+            SynthParamsParamId::Env1Route4Filter,
+        ],
         adsr: [
             SynthParamsParamId::Attack,
             SynthParamsParamId::Decay,
@@ -1103,7 +1236,12 @@ pub const ENV_PARAMS: [EnvelopeParamIds; MAX_ENVELOPES] = [
         level: SynthParamsParamId::Env1Level,
     },
     EnvelopeParamIds {
-        filters: [SynthParamsParamId::Env2Route1Filter, SynthParamsParamId::Env2Route2Filter, SynthParamsParamId::Env2Route3Filter, SynthParamsParamId::Env2Route4Filter],
+        filters: [
+            SynthParamsParamId::Env2Route1Filter,
+            SynthParamsParamId::Env2Route2Filter,
+            SynthParamsParamId::Env2Route3Filter,
+            SynthParamsParamId::Env2Route4Filter,
+        ],
         adsr: [
             SynthParamsParamId::Env2Attack,
             SynthParamsParamId::Env2Decay,
@@ -1125,7 +1263,12 @@ pub const ENV_PARAMS: [EnvelopeParamIds; MAX_ENVELOPES] = [
         level: SynthParamsParamId::Env2Level,
     },
     EnvelopeParamIds {
-        filters: [SynthParamsParamId::Env3Route1Filter, SynthParamsParamId::Env3Route2Filter, SynthParamsParamId::Env3Route3Filter, SynthParamsParamId::Env3Route4Filter],
+        filters: [
+            SynthParamsParamId::Env3Route1Filter,
+            SynthParamsParamId::Env3Route2Filter,
+            SynthParamsParamId::Env3Route3Filter,
+            SynthParamsParamId::Env3Route4Filter,
+        ],
         adsr: [
             SynthParamsParamId::Env3Attack,
             SynthParamsParamId::Env3Decay,
@@ -1147,7 +1290,12 @@ pub const ENV_PARAMS: [EnvelopeParamIds; MAX_ENVELOPES] = [
         level: SynthParamsParamId::Env3Level,
     },
     EnvelopeParamIds {
-        filters: [SynthParamsParamId::Env4Route1Filter, SynthParamsParamId::Env4Route2Filter, SynthParamsParamId::Env4Route3Filter, SynthParamsParamId::Env4Route4Filter],
+        filters: [
+            SynthParamsParamId::Env4Route1Filter,
+            SynthParamsParamId::Env4Route2Filter,
+            SynthParamsParamId::Env4Route3Filter,
+            SynthParamsParamId::Env4Route4Filter,
+        ],
         adsr: [
             SynthParamsParamId::Env4Attack,
             SynthParamsParamId::Env4Decay,
@@ -1197,7 +1345,12 @@ impl LfoParamIds {
 
 pub const LFO_PARAMS: [LfoParamIds; MAX_LFOS] = [
     LfoParamIds {
-        filters: [SynthParamsParamId::Lfo1Route1Filter, SynthParamsParamId::Lfo1Route2Filter, SynthParamsParamId::Lfo1Route3Filter, SynthParamsParamId::Lfo1Route4Filter],
+        filters: [
+            SynthParamsParamId::Lfo1Route1Filter,
+            SynthParamsParamId::Lfo1Route2Filter,
+            SynthParamsParamId::Lfo1Route3Filter,
+            SynthParamsParamId::Lfo1Route4Filter,
+        ],
         shape: SynthParamsParamId::LfoShape,
         rate: SynthParamsParamId::LfoRate,
         mode: SynthParamsParamId::LfoMode,
@@ -1207,7 +1360,12 @@ pub const LFO_PARAMS: [LfoParamIds; MAX_LFOS] = [
         newest: SynthParamsParamId::LfoNewest,
     },
     LfoParamIds {
-        filters: [SynthParamsParamId::Lfo2Route1Filter, SynthParamsParamId::Lfo2Route2Filter, SynthParamsParamId::Lfo2Route3Filter, SynthParamsParamId::Lfo2Route4Filter],
+        filters: [
+            SynthParamsParamId::Lfo2Route1Filter,
+            SynthParamsParamId::Lfo2Route2Filter,
+            SynthParamsParamId::Lfo2Route3Filter,
+            SynthParamsParamId::Lfo2Route4Filter,
+        ],
         shape: SynthParamsParamId::Lfo2Shape,
         rate: SynthParamsParamId::Lfo2Rate,
         mode: SynthParamsParamId::Lfo2Mode,
@@ -1236,7 +1394,12 @@ pub const LFO_PARAMS: [LfoParamIds; MAX_LFOS] = [
         newest: SynthParamsParamId::Lfo2Newest,
     },
     LfoParamIds {
-        filters: [SynthParamsParamId::Lfo3Route1Filter, SynthParamsParamId::Lfo3Route2Filter, SynthParamsParamId::Lfo3Route3Filter, SynthParamsParamId::Lfo3Route4Filter],
+        filters: [
+            SynthParamsParamId::Lfo3Route1Filter,
+            SynthParamsParamId::Lfo3Route2Filter,
+            SynthParamsParamId::Lfo3Route3Filter,
+            SynthParamsParamId::Lfo3Route4Filter,
+        ],
         shape: SynthParamsParamId::Lfo3Shape,
         rate: SynthParamsParamId::Lfo3Rate,
         mode: SynthParamsParamId::Lfo3Mode,
@@ -1265,7 +1428,12 @@ pub const LFO_PARAMS: [LfoParamIds; MAX_LFOS] = [
         newest: SynthParamsParamId::Lfo3Newest,
     },
     LfoParamIds {
-        filters: [SynthParamsParamId::Lfo4Route1Filter, SynthParamsParamId::Lfo4Route2Filter, SynthParamsParamId::Lfo4Route3Filter, SynthParamsParamId::Lfo4Route4Filter],
+        filters: [
+            SynthParamsParamId::Lfo4Route1Filter,
+            SynthParamsParamId::Lfo4Route2Filter,
+            SynthParamsParamId::Lfo4Route3Filter,
+            SynthParamsParamId::Lfo4Route4Filter,
+        ],
         shape: SynthParamsParamId::Lfo4Shape,
         rate: SynthParamsParamId::Lfo4Rate,
         mode: SynthParamsParamId::Lfo4Mode,
@@ -1449,17 +1617,26 @@ impl SynthParams {
         ]
     }
 
-    fn lfo_settings(&self) -> [LfoSettings; MAX_LFOS] {
-        [
-            (&self.lfo_shape, &self.lfo_rate, &self.lfo_mode),
-            (&self.lfo_2_shape, &self.lfo_2_rate, &self.lfo_2_mode),
-            (&self.lfo_3_shape, &self.lfo_3_rate, &self.lfo_3_mode),
-            (&self.lfo_4_shape, &self.lfo_4_rate, &self.lfo_4_mode),
-        ]
-        .map(|(shape, rate, mode)| LfoSettings {
-            waveform: shape.value().into(),
-            frequency_hz: rate.read(),
-            mode: mode.value().into(),
+    /// Settings of every LFO; `custom` holds the node-edited shapes, which
+    /// replace the Shape presets.
+    fn lfo_settings(&self, custom: &CustomLfoShapes) -> [LfoSettings; MAX_LFOS] {
+        let presets = self.lfo_presets();
+        let rates = [
+            &self.lfo_rate,
+            &self.lfo_2_rate,
+            &self.lfo_3_rate,
+            &self.lfo_4_rate,
+        ];
+        let modes = [
+            &self.lfo_mode,
+            &self.lfo_2_mode,
+            &self.lfo_3_mode,
+            &self.lfo_4_mode,
+        ];
+        std::array::from_fn(|index| LfoSettings {
+            shape: custom.0[index].unwrap_or_else(|| LfoShape::from_waveform(presets[index])),
+            frequency_hz: rates[index].read(),
+            mode: modes[index].value().into(),
         })
     }
 
@@ -1514,7 +1691,8 @@ impl SynthParams {
                 .map(|destination| {
                     destination.with_effect(
                         self.get_plain(ENV_PARAMS[index].filters[slot].into())
-                            .expect("envelope filter identity must exist") as usize,
+                            .expect("envelope filter identity must exist")
+                            as usize,
                     )
                 }),
                 amount: amounts[index][slot].read() / 100.0,
@@ -1558,7 +1736,8 @@ impl SynthParams {
                     destination: destination.map(|destination| {
                         destination.with_effect(
                             self.get_plain(LFO_PARAMS[index].filters[slot].into())
-                                .expect("LFO filter identity must exist") as usize,
+                                .expect("LFO filter identity must exist")
+                                as usize,
                         )
                     }),
                     amount: amount.read() / 100.0,
@@ -1585,6 +1764,9 @@ pub struct Synth;
 #[derive(Default)]
 pub struct SynthState {
     engine: SynthEngine,
+    /// Last custom LFO shapes read from the params; kept when the editor
+    /// holds the lock so the audio thread never waits.
+    lfo_shapes: CustomLfoShapes,
 }
 
 impl PluginLogic for Synth {
@@ -1624,7 +1806,14 @@ impl PluginLogic for Synth {
         }
 
         state.engine.set_lfo_count(params.lfo_count.value_usize());
-        for (index, settings) in params.lfo_settings().into_iter().enumerate() {
+        if let Ok(shapes) = params.lfo_shapes.try_read() {
+            state.lfo_shapes = *shapes;
+        }
+        for (index, settings) in params
+            .lfo_settings(&state.lfo_shapes)
+            .into_iter()
+            .enumerate()
+        {
             state.engine.set_lfo(index, settings);
         }
 

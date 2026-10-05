@@ -13,7 +13,7 @@ use super::SynthUi;
 use crate::patch::{
     DEFAULT_PATCH_NAME, Patch, PatchError, PatchLibrary, is_default_name, validate_name,
 };
-use crate::plugin::SynthParams;
+use crate::plugin::{CustomLfoShapes, SynthParams};
 
 /// Normalized difference that counts as an edit for the " *" indicator.
 const MODIFIED_TOLERANCE: f64 = 1e-4;
@@ -32,6 +32,9 @@ pub(super) struct PatchController {
     /// Normalized values of the loaded patch, compared against the live
     /// parameters for the modified indicator.
     reference: Vec<(u32, f64)>,
+    /// Custom LFO shapes of the loaded patch, also compared for the
+    /// indicator.
+    reference_shapes: CustomLfoShapes,
     /// The persisted patch name `reference` was built for. A mismatch forces
     /// a rebuild, e.g. after the host restores a session.
     reference_name: Option<String>,
@@ -45,6 +48,7 @@ impl PatchController {
             library,
             names: Vec::new(),
             reference: Vec::new(),
+            reference_shapes: CustomLfoShapes::default(),
             reference_name: None,
             pending: Vec::new(),
         }
@@ -121,6 +125,7 @@ impl PatchController {
                 }
             }
         }
+        params.set_custom_lfo_shapes(patch.lfo_shapes());
         params.set_patch_name(name);
         self.snapshot(params, name);
     }
@@ -131,6 +136,7 @@ impl PatchController {
             .into_iter()
             .filter_map(|(id, _)| params.get_normalized(id).map(|value| (id, value)))
             .collect();
+        self.reference_shapes = params.custom_lfo_shapes();
         self.reference_name = Some(name.to_owned());
     }
 
@@ -144,7 +150,11 @@ impl PatchController {
         if !overwrite && let Some(existing) = self.library.find(&name) {
             return Ok(SaveOutcome::ConfirmOverwrite(existing));
         }
-        let saved = self.library.save(&name, &Patch::capture(params), params)?;
+        let saved = self.library.save(
+            &name,
+            &Patch::capture(params).with_lfo_shapes(params.custom_lfo_shapes()),
+            params,
+        )?;
         params.set_patch_name(&saved);
         self.snapshot(params, &saved);
         self.refresh();
@@ -171,11 +181,12 @@ impl PatchController {
         if self.reference_name.as_deref() != Some(name.as_str()) {
             self.rebuild_reference(params, &name);
         }
-        self.reference.iter().any(|&(id, value)| {
-            params
-                .get_normalized(id)
-                .is_some_and(|current| (current - value).abs() > MODIFIED_TOLERANCE)
-        })
+        params.custom_lfo_shapes() != self.reference_shapes
+            || self.reference.iter().any(|&(id, value)| {
+                params
+                    .get_normalized(id)
+                    .is_some_and(|current| (current - value).abs() > MODIFIED_TOLERANCE)
+            })
     }
 
     fn rebuild_reference(&mut self, params: &SynthParams, name: &str) {
@@ -187,6 +198,7 @@ impl PatchController {
         match patch {
             Some(patch) => {
                 self.reference = patch.normalized_values(params);
+                self.reference_shapes = patch.lfo_shapes();
                 self.reference_name = Some(name.to_owned());
             }
             // The file is gone or unreadable: treat the current sound as the

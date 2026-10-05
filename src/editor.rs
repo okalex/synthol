@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt::Write;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -8,19 +8,18 @@ use slint::Model;
 use truce::prelude::*;
 use truce_slint::{KeyboardCapture, PluginContext, SlintEditor, SyncFn};
 
-mod patches;
 mod effects;
+mod patches;
 
 use self::patches::PatchController;
 
 use crate::engine::modulation::MAX_PITCH_SEMITONES;
 use crate::engine::node::filter::{BiquadCoefficients, MAX_CUTOFF_HZ, MIN_CUTOFF_HZ};
 use crate::engine::node::filter::{MAX_Q, MIN_Q};
-use crate::engine::node::lfo::render_lfo_cycle;
-use crate::engine::node::oscillator::{naive_waveform_sample, render_cycle};
+use crate::engine::node::oscillator::render_cycle;
 use crate::engine::{
-    FilterMode, FilterSettings, MAX_ENVELOPES, MAX_LFOS, MAX_OSCILLATORS, MAX_VOICES, MOD_SLOTS,
-    ModDestination, ModRoute, Waveform,
+    FilterMode, FilterSettings, LfoPoint, LfoShape, MAX_ENVELOPES, MAX_LFOS, MAX_OSCILLATORS,
+    MAX_VOICES, MOD_SLOTS, ModDestination, ModRoute, Waveform,
 };
 use crate::patch::PatchLibrary;
 use crate::plugin::{
@@ -336,14 +335,97 @@ fn setup_editor_with(
         }
     });
 
+    let lfo_view = Rc::new(LfoShapeView::new(&ui));
+
     let pending_edits_for_ui = pending_edits.clone();
     let state_for_ui = state.clone();
     let selected = selected_lfo.clone();
+    let view = lfo_view.clone();
+    let ui_for_callback = ui.as_weak();
     ui.on_lfo_shape_selected(move |index| {
-        let id = LFO_PARAMS[selected()].shape;
-        let normalized = lfo_shape_to_normalized(index);
-        state_for_ui.params().set_normalized(id.into(), normalized);
-        enqueue_edit(&pending_edits_for_ui, (id, normalized));
+        let lfo = selected();
+        let params = state_for_ui.params();
+        match LfoPreset::from_index(index) {
+            Some(LfoPreset::Parameter(_)) => {
+                let id = LFO_PARAMS[lfo].shape;
+                let normalized = lfo_shape_to_normalized(index);
+                params.set_normalized(id.into(), normalized);
+                enqueue_edit(&pending_edits_for_ui, (id, normalized));
+                params.set_custom_lfo_shape(lfo, None);
+            }
+            Some(LfoPreset::Nodes(shape)) => params.set_custom_lfo_shape(lfo, Some(*shape)),
+            None => return,
+        }
+        let ui = ui_for_callback
+            .upgrade()
+            .expect("LFO callback requires a live editor");
+        view.show(&ui, params.lfo_shape(lfo));
+    });
+
+    // Applies a node edit to the selected LFO's shape, turning it custom.
+    let edit_lfo_shape: Rc<LfoShapeEdit> = {
+        let state = state.clone();
+        let selected = selected_lfo.clone();
+        let view = lfo_view.clone();
+        let ui = ui.as_weak();
+        Rc::new(move |edit: &dyn Fn(&mut LfoShape)| {
+            let lfo = selected();
+            let params = state.params();
+            let mut shape = params.lfo_shape(lfo);
+            edit(&mut shape);
+            params.set_custom_lfo_shape(lfo, Some(shape));
+            view.show(
+                &ui.upgrade().expect("LFO callback requires a live editor"),
+                shape,
+            );
+        })
+    };
+    let edit = edit_lfo_shape.clone();
+    ui.on_lfo_node_moved(move |index, x, y, snap| {
+        let (x, y) = snap_lfo_point(x, y, snap);
+        edit(&|shape| shape.move_point(index as usize, x, y));
+    });
+    let edit = edit_lfo_shape.clone();
+    ui.on_lfo_node_added(move |x, y, snap| {
+        let (x, y) = snap_lfo_point(x, y, snap);
+        edit(&|shape| {
+            shape.insert_point(x, y);
+        });
+    });
+    let edit = edit_lfo_shape.clone();
+    ui.on_lfo_node_removed(move |index| {
+        edit(&|shape| {
+            shape.remove_point(index as usize);
+        });
+    });
+    let curve_drag_start = Rc::new(Cell::new(0.0_f32));
+    let state_for_ui = state.clone();
+    let selected = selected_lfo.clone();
+    let drag_start = curve_drag_start.clone();
+    ui.on_lfo_curve_pressed(move |index| {
+        let shape = state_for_ui.params().lfo_shape(selected());
+        if let Some(point) = shape.points().get(index as usize) {
+            drag_start.set(point.curve);
+        }
+    });
+    let edit = edit_lfo_shape.clone();
+    ui.on_lfo_curve_dragged(move |index, amount| {
+        let start = curve_drag_start.get();
+        edit(&|shape| {
+            if let Some(curve) = dragged_lfo_curve(shape, index as usize, start, amount) {
+                shape.set_curve(index as usize, curve);
+            }
+        });
+    });
+    let edit = edit_lfo_shape.clone();
+    ui.on_lfo_curve_reset(move |index| edit(&|shape| shape.set_curve(index as usize, 0.0)));
+    let edit = edit_lfo_shape;
+    ui.on_lfo_smooth_toggled(move || edit(&|shape| shape.set_smooth(!shape.is_smooth())));
+    let state_for_ui = state.clone();
+    let selected = selected_lfo.clone();
+    ui.on_lfo_shape_path(move |_revision, width, height, filled| {
+        let shape = state_for_ui.params().lfo_shape(selected());
+        slint::SharedString::from(lfo_shape_path(&shape, width, height, filled))
     });
 
     let state_for_ui = state.clone();
@@ -372,11 +454,6 @@ fn setup_editor_with(
         let normalized = lfo_mode_to_normalized(index);
         state_for_ui.params().set_normalized(id.into(), normalized);
         enqueue_edit(&pending_edits_for_ui, (id, normalized));
-    });
-
-    ui.on_lfo_cycle_path(|index, width, height| {
-        let waveform = lfo_shape_from_index(index);
-        slint::SharedString::from(lfo_cycle_path(waveform, width, height))
     });
 
     let lfo_marker_model = Rc::new(slint::VecModel::from(vec![
@@ -588,10 +665,13 @@ fn setup_editor_with(
         ui.set_filter_mix_text(state.format_param(SynthParamsParamId::FilterMix).into());
         let selected = ui.get_current_lfo() as usize;
         let ids = &LFO_PARAMS[selected];
-        ui.set_lfo_shape(
-            (state.get_param(ids.shape) * (LfoShapeType::variant_count() - 1) as f32).round()
-                as i32,
-        );
+        let preset = (state.get_param(ids.shape) * (LfoShapeType::variant_count() - 1) as f32)
+            .round() as i32;
+        ui.set_lfo_shape(lfo_dropdown_index(
+            preset,
+            state.params().custom_lfo_shape(selected),
+        ));
+        lfo_view.show(&ui, state.params().lfo_shape(selected));
         ui.set_lfo_rate(state.get_param(ids.rate));
         ui.set_lfo_rate_text(slint::SharedString::from(state.format_param(ids.rate)));
         ui.set_lfo_mode(
@@ -616,9 +696,13 @@ fn setup_editor_with(
         };
         let shown = shown_oscillators(oscillator_count, &routes);
         let choices = routing_choices(state.params(), &routes);
-        sync_model(&destination_model, choices.iter().map(|&destination| {
-            destination_label(destination).into()
-        }).collect());
+        sync_model(
+            &destination_model,
+            choices
+                .iter()
+                .map(|&destination| destination_label(destination).into())
+                .collect(),
+        );
         let slots = mod_route_slots(&routes, shown);
         for (row, mut slot) in slots.into_iter().enumerate() {
             slot.destination = choices
@@ -641,13 +725,7 @@ fn setup_editor_with(
                 .map(|id| decode_lfo_position(state.get_meter(id)));
             let newest = decode_lfo_newest(state.get_meter(ids.newest));
             let phase = newest.and_then(|slot| phases.get(slot).copied().flatten());
-            let value = phase.map(|phase| {
-                let shape = lfo_shape_from_index(
-                    (state.get_param(ids.shape) * (LfoShapeType::variant_count() - 1) as f32)
-                        .round() as i32,
-                );
-                naive_waveform_sample(shape, phase)
-            });
+            let value = phase.map(|phase| state.params().lfo_shape(index).sample(phase));
             (read_routes(state, index), value)
         });
         let mut mods = combined_knob_modulation(&routes, bases, &sources);
@@ -720,6 +798,7 @@ fn reset_lfo(
     index: usize,
 ) {
     reset_modulator(state, edits, &LFO_PARAMS[index].all());
+    state.params().set_custom_lfo_shape(index, None);
 }
 
 fn reset_modulator(
@@ -776,6 +855,9 @@ fn remove_lfo(
             set_param(state, edits, id, value);
         }
     }
+    let mut shapes = state.params().custom_lfo_shapes();
+    shapes.0.copy_within(removed + 1..count, removed);
+    state.params().set_custom_lfo_shapes(shapes);
     reset_lfo(state, edits, count - 1);
     set_param(
         state,
@@ -938,12 +1020,204 @@ fn waveform_cycle_path(waveform: Waveform, start_phase: f32, width: f32, height:
     cycle_samples_path(&samples, width, height)
 }
 
-/// SVG path commands tracing one LFO cycle of `waveform` across a `width` by
-/// `height` box, laid out like `waveform_cycle_path`.
-fn lfo_cycle_path(waveform: Waveform, width: f32, height: f32) -> String {
-    let mut samples = [0.0_f32; CYCLE_PATH_SEGMENTS + 1];
-    render_lfo_cycle(waveform, &mut samples);
-    cycle_samples_path(&samples, width, height)
+/// SVG path commands tracing one cycle of `shape` across a `width` by
+/// `height` box, laid out like `waveform_cycle_path`. Vertices are added on
+/// both sides of every node so jumps are drawn vertical. `filled` closes the
+/// path along the zero line for the area under the curve.
+fn lfo_shape_path(shape: &LfoShape, width: f32, height: f32, filled: bool) -> String {
+    const NODE_EDGE: f32 = 1e-4;
+    let mut phases: Vec<f32> = (0..=CYCLE_PATH_SEGMENTS)
+        .map(|index| index as f32 / CYCLE_PATH_SEGMENTS as f32)
+        .collect();
+    for point in shape.points() {
+        phases.extend(
+            [point.x - NODE_EDGE, point.x]
+                .into_iter()
+                .filter(|x| (0.0..=1.0).contains(x)),
+        );
+    }
+    phases.sort_by(f32::total_cmp);
+    phases.dedup();
+    let mut commands = String::with_capacity(phases.len() * 16 + 48);
+    for (index, &phase) in phases.iter().enumerate() {
+        // The cycle's right edge is the limit approaching the wrap.
+        let value = shape.sample(if phase >= 1.0 { 1.0 - NODE_EDGE } else { phase });
+        let x = width * phase;
+        let y = height * (1.0 - value.clamp(-1.0, 1.0)) / 2.0;
+        let command = if index == 0 { 'M' } else { 'L' };
+        let _ = write!(commands, "{command}{x:.2} {y:.2} ");
+    }
+    if filled {
+        let middle = height / 2.0;
+        let _ = write!(commands, "L{width:.2} {middle:.2} L0 {middle:.2} Z");
+    }
+    commands
+}
+
+/// Applies an edit to the selected LFO's shape.
+type LfoShapeEdit = dyn Fn(&dyn Fn(&mut LfoShape));
+
+/// The selected LFO's nodes and bend handles as shown in the editor.
+struct LfoShapeView {
+    nodes: Rc<slint::VecModel<LfoNode>>,
+    handles: Rc<slint::VecModel<LfoCurveHandle>>,
+    shown: Cell<Option<LfoShape>>,
+}
+
+impl LfoShapeView {
+    fn new(ui: &SynthUi) -> Self {
+        let nodes = Rc::new(slint::VecModel::default());
+        let handles = Rc::new(slint::VecModel::default());
+        ui.set_lfo_nodes(slint::ModelRc::from(nodes.clone()));
+        ui.set_lfo_curve_handles(slint::ModelRc::from(handles.clone()));
+        Self {
+            nodes,
+            handles,
+            shown: Cell::new(None),
+        }
+    }
+
+    /// Shows `shape`, touching the UI only when it changed.
+    fn show(&self, ui: &SynthUi, shape: LfoShape) {
+        if self.shown.get() == Some(shape) {
+            return;
+        }
+        self.shown.set(Some(shape));
+        let (nodes, handles) = lfo_shape_view_rows(&shape);
+        sync_model(&self.nodes, nodes);
+        sync_model(&self.handles, handles);
+        ui.set_lfo_smooth(shape.is_smooth());
+        ui.set_lfo_shape_revision(ui.get_lfo_shape_revision().wrapping_add(1));
+    }
+}
+
+/// Node rows and one bend handle per segment; handles of jumps and flat
+/// segments, which bending can't change, are hidden.
+fn lfo_shape_view_rows(shape: &LfoShape) -> (Vec<LfoNode>, Vec<LfoCurveHandle>) {
+    let points = shape.points();
+    let nodes = points
+        .iter()
+        .map(|point| LfoNode {
+            x: point.x,
+            y: point.y,
+        })
+        .collect();
+    let handles = (0..points.len())
+        .map(|index| {
+            let (x, y) = shape.segment_midpoint(index).unwrap_or_default();
+            LfoCurveHandle {
+                x,
+                y,
+                visible: lfo_segment_direction(shape, index).is_some(),
+            }
+        })
+        .collect();
+    (nodes, handles)
+}
+
+/// Whether the segment leaving node `index` rises (1) or falls (-1); `None`
+/// for jumps and flat segments.
+fn lfo_segment_direction(shape: &LfoShape, index: usize) -> Option<f32> {
+    let points = shape.points();
+    let start = points.get(index)?;
+    let (end, end_x) = match points.get(index + 1) {
+        Some(next) => (next, next.x),
+        None => (&points[0], points[0].x + 1.0),
+    };
+    let rise = end.y - start.y;
+    (end_x > start.x && rise.abs() > 1e-6).then(|| rise.signum())
+}
+
+/// Bend change per unit of vertical drag (the plot spans 2 units).
+const LFO_CURVE_DRAG_SCALE: f32 = 8.0;
+
+/// The bend of segment `index` after dragging its handle `amount` value units
+/// up from where the drag began with bend `start`: the middle of the curve
+/// follows the pointer.
+fn dragged_lfo_curve(shape: &LfoShape, index: usize, start: f32, amount: f32) -> Option<f32> {
+    let direction = lfo_segment_direction(shape, index)?;
+    Some(start - direction * amount * LFO_CURVE_DRAG_SCALE)
+}
+
+/// Grid used when snapping LFO nodes: sixteenths of the cycle, eighths of
+/// the value range.
+fn snap_lfo_point(x: f32, y: f32, snap: bool) -> (f32, f32) {
+    if snap {
+        ((x * 16.0).round() / 16.0, (y * 8.0).round() / 8.0)
+    } else {
+        (x, y)
+    }
+}
+
+/// Names of the Shape dropdown entries: the Shape parameter's waveforms,
+/// then node presets applied as custom shapes, then "Custom" for edits.
+#[cfg(test)]
+const LFO_PRESET_NAMES: [&str; 9] = [
+    "Sine", "Square", "Triangle", "Sawtooth", "Saw Down", "Exp Rise", "Exp Fall", "Steps", "Custom",
+];
+const LFO_CUSTOM_INDEX: i32 = 8;
+
+#[derive(Clone, Debug, PartialEq)]
+enum LfoPreset {
+    /// A value of the LFO's Shape parameter.
+    Parameter(Waveform),
+    /// A node layout applied as a custom shape.
+    Nodes(Box<LfoShape>),
+}
+
+impl LfoPreset {
+    fn from_index(index: i32) -> Option<Self> {
+        let parameter_count = LfoShapeType::variant_count() as i32;
+        match index {
+            0.. if index < parameter_count => Some(Self::Parameter(lfo_shape_from_index(index))),
+            4 => Some(Self::Nodes(Box::new(LfoShape::new(
+                &[LfoPoint::new(0.5, -1.0), LfoPoint::new(0.5, 1.0)],
+                false,
+            )))),
+            5 => Some(Self::Nodes(Box::new(LfoShape::new(
+                &[LfoPoint::curved(0.0, -1.0, 5.0), LfoPoint::new(1.0, 1.0)],
+                false,
+            )))),
+            6 => Some(Self::Nodes(Box::new(LfoShape::new(
+                &[LfoPoint::curved(0.0, 1.0, -5.0), LfoPoint::new(1.0, -1.0)],
+                false,
+            )))),
+            7 => {
+                let levels = [-1.0, -1.0 / 3.0, 1.0 / 3.0, 1.0];
+                let points: Vec<_> = levels
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(step, &level)| {
+                        let start = step as f32 / 4.0;
+                        [
+                            LfoPoint::new(start, level),
+                            LfoPoint::new(start + 0.25, level),
+                        ]
+                    })
+                    .collect();
+                Some(Self::Nodes(Box::new(LfoShape::new(&points, false))))
+            }
+            _ => None,
+        }
+    }
+
+    fn shape(self) -> LfoShape {
+        match self {
+            Self::Parameter(waveform) => LfoShape::from_waveform(waveform),
+            Self::Nodes(shape) => *shape,
+        }
+    }
+}
+
+/// The Shape dropdown entry for an LFO with Shape parameter index `preset`
+/// and node edits `custom`.
+fn lfo_dropdown_index(preset: i32, custom: Option<LfoShape>) -> i32 {
+    let Some(custom) = custom else {
+        return preset;
+    };
+    (0..LFO_CUSTOM_INDEX)
+        .find(|&index| LfoPreset::from_index(index).is_some_and(|p| p.shape() == custom))
+        .unwrap_or(LFO_CUSTOM_INDEX)
 }
 
 /// Spreads `samples` evenly from left to right, +1 at the top.
@@ -1064,12 +1338,12 @@ fn oscillator_parameter(oscillator: i32, id: i32) -> Option<SynthParamsParamId> 
 /// The knob parameter each modulation destination moves.
 fn destination_parameter(destination: ModDestination) -> u32 {
     match destination {
-        ModDestination::OscPitch(index) => {
-            OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)].pitch.into()
-        }
-        ModDestination::OscLevel(index) => {
-            OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)].level.into()
-        }
+        ModDestination::OscPitch(index) => OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)]
+            .pitch
+            .into(),
+        ModDestination::OscLevel(index) => OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)]
+            .level
+            .into(),
         destination => {
             let slot = destination.effect().expect("filter destination");
             let control = (destination.index() - 2 * MAX_OSCILLATORS) % 3;
@@ -1124,7 +1398,10 @@ fn routing_choices(params: &SynthParams, routes: &[ModRoute]) -> Vec<Option<ModD
     let oscillators = shown_oscillators(params.osc_count.value_usize(), routes);
     let mut choices = vec![None];
     choices.extend((0..oscillators).flat_map(|index| {
-        [Some(ModDestination::OscPitch(index)), Some(ModDestination::OscLevel(index))]
+        [
+            Some(ModDestination::OscPitch(index)),
+            Some(ModDestination::OscLevel(index)),
+        ]
     }));
     let chain = params.effect_chain();
     for &slot in chain.slots() {
@@ -1212,9 +1489,8 @@ fn read_modulator_routes(
         let amount = state.get_param(amounts[slot]);
         ModRoute {
             destination: mod_destination_from_index(index as u32).map(|destination| {
-                destination.with_effect(
-                    (state.get_param(source.filters()[slot]) * 31.0).round() as usize,
-                )
+                destination
+                    .with_effect((state.get_param(source.filters()[slot]) * 31.0).round() as usize)
             }),
             amount: (2.0 * amount - 1.0).clamp(-1.0, 1.0),
         }
@@ -1239,8 +1515,12 @@ fn amount_to_normalized(amount: f32) -> f64 {
 fn default_mod_amount(destination: ModDestination) -> f32 {
     match destination {
         ModDestination::OscPitch(_) => 1.0 / (2.0 * MAX_PITCH_SEMITONES),
-        ModDestination::OscLevel(_) | ModDestination::FilterMix | ModDestination::EffectMix(_) => 0.25,
-        ModDestination::FilterCutoff | ModDestination::EffectCutoff(_) => 1.0 / (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).log2(),
+        ModDestination::OscLevel(_) | ModDestination::FilterMix | ModDestination::EffectMix(_) => {
+            0.25
+        }
+        ModDestination::FilterCutoff | ModDestination::EffectCutoff(_) => {
+            1.0 / (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).log2()
+        }
         ModDestination::FilterQ | ModDestination::EffectQ(_) => 1.0 / (MAX_Q / MIN_Q).log2(),
     }
 }
@@ -1741,9 +2021,9 @@ mod tests {
 
     #[test]
     fn effects_chain_editor_adds_edits_pointer_reorders_removes_and_caps_at_32() {
+        use crate::plugin::effects::effect_ids;
         use slint::ComponentHandle;
         use slint::platform::software_renderer::PremultipliedRgbaColor;
-        use crate::plugin::effects::effect_ids;
 
         truce_slint::platform::ensure_platform();
         let window = truce_slint::platform::create_slint_window();
@@ -1761,43 +2041,63 @@ mod tests {
         ui.invoke_effect_released(1, 0);
         ui.invoke_mod_assign(ModDestination::EffectCutoff(1).index() as i32);
         sync(&state);
-        assert_eq!(read_modulator_routes(&state, Modulator::Envelope(0))[1].destination,
-            Some(ModDestination::EffectCutoff(1)));
+        assert_eq!(
+            read_modulator_routes(&state, Modulator::Envelope(0))[1].destination,
+            Some(ModDestination::EffectCutoff(1))
+        );
         assert_eq!(ui.get_effects().row_data(1).unwrap().cutoff, 0.2);
 
         ui.show().unwrap();
         let mut pixels = vec![PremultipliedRgbaColor::default(); 1100 * 1500];
-        assert!(window.draw_if_needed(|renderer| { renderer.render(&mut pixels, 1100); }));
-        let top = (300..1200).find(|&y| {
-            let pixel = pixels[y * 1100 + 18];
-            (pixel.red, pixel.green, pixel.blue) == (52, 57, 67)
-        }).expect("visible effects card border");
+        assert!(window.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 1100);
+        }));
+        let top = (300..1200)
+            .find(|&y| {
+                let pixel = pixels[y * 1100 + 18];
+                (pixel.red, pixel.green, pixel.blue) == (52, 57, 67)
+            })
+            .expect("visible effects card border");
         let start = slint::LogicalPosition::new(50.0, top as f32 + 16.0);
         let end = slint::LogicalPosition::new(410.0, top as f32 + 16.0);
-        ui.window().dispatch_event(slint::platform::WindowEvent::PointerPressed {
-            position: start,
-            button: slint::platform::PointerEventButton::Left,
-        });
-        ui.window().dispatch_event(slint::platform::WindowEvent::PointerMoved { position: end });
-        ui.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {
-            position: end,
-            button: slint::platform::PointerEventButton::Left,
-        });
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                position: start,
+                button: slint::platform::PointerEventButton::Left,
+            });
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: end });
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                position: end,
+                button: slint::platform::PointerEventButton::Left,
+            });
         sync(&state);
-        assert_eq!(params.effect_chain().slots(), &[1, 0], "title drag must reorder actual cards");
+        assert_eq!(
+            params.effect_chain().slots(),
+            &[1, 0],
+            "title drag must reorder actual cards"
+        );
         assert_eq!(ui.get_effects().row_data(0).unwrap().slot, 1);
         assert!((params.get_normalized(effect_ids(1)[1]).unwrap() - 0.2).abs() < 1e-6);
-        assert_eq!(read_modulator_routes(&state, Modulator::Envelope(0))[1].destination,
-            Some(ModDestination::EffectCutoff(1)));
+        assert_eq!(
+            read_modulator_routes(&state, Modulator::Envelope(0))[1].destination,
+            Some(ModDestination::EffectCutoff(1))
+        );
 
         ui.invoke_effect_remove(1);
         sync(&state);
-        assert_eq!(read_modulator_routes(&state, Modulator::Envelope(0))[1], ModRoute::default());
+        assert_eq!(
+            read_modulator_routes(&state, Modulator::Envelope(0))[1],
+            ModRoute::default()
+        );
         ui.invoke_effect_remove(0);
         sync(&state);
         assert_eq!(ui.get_effects().row_count(), 0);
         window.request_redraw();
-        assert!(window.draw_if_needed(|renderer| { renderer.render(&mut pixels, 1100); }));
+        assert!(window.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 1100);
+        }));
         for _ in 0..33 {
             ui.invoke_effect_add();
             sync(&state);
@@ -1806,7 +2106,9 @@ mod tests {
         assert_eq!(params.effect_chain().slots(), &(0..32).collect::<Vec<_>>());
         assert!((params.get_plain(effect_ids(1)[1]).unwrap() - 20_000.0).abs() < 1e-6);
         window.request_redraw();
-        assert!(window.draw_if_needed(|renderer| { renderer.render(&mut pixels, 1100); }));
+        assert!(window.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 1100);
+        }));
         ui.invoke_effect_moved(31, 0);
         sync(&state);
         assert_eq!(params.effect_chain().slots()[0], 31);
@@ -1840,6 +2142,73 @@ mod tests {
             transport: Box::new(|| None),
         };
         PluginContext::new(Arc::new(bridge), params)
+    }
+
+    #[test]
+    fn lfo_nodes_are_edited_from_the_plot() {
+        use slint::Model;
+
+        truce_slint::platform::ensure_platform();
+        let ui = SynthUi::new().unwrap();
+        let params = Arc::new(SynthParams::default());
+        params.set_normalized(SynthParamsParamId::EnvCount.into(), 0.0);
+        let state = editor_test_context(params.clone());
+        let sync = setup_editor(state.clone(), ui.clone_strong());
+        ui.invoke_lfo_add();
+        ui.set_selected_lfo(1);
+        ui.invoke_lfo_add();
+        sync(&state);
+        assert_eq!(ui.get_current_lfo(), 1);
+
+        ui.invoke_lfo_shape_selected(2);
+        sync(&state);
+        assert_eq!(ui.get_lfo_shape(), 2);
+        assert_eq!(params.custom_lfo_shape(1), None);
+        assert_eq!(ui.get_lfo_nodes().row_count(), 2);
+        let revision = ui.get_lfo_shape_revision();
+
+        ui.invoke_lfo_node_added(0.5, 0.33, true);
+        sync(&state);
+        assert_eq!(ui.get_lfo_shape(), LFO_CUSTOM_INDEX);
+        assert_ne!(ui.get_lfo_shape_revision(), revision);
+        let nodes = ui.get_lfo_nodes();
+        assert_eq!(nodes.row_count(), 3);
+        assert_eq!(nodes.row_data(1).unwrap(), LfoNode { x: 0.5, y: 0.375 });
+        assert_eq!(params.custom_lfo_shape(1).unwrap().points().len(), 3);
+        assert_eq!(params.custom_lfo_shape(0), None);
+
+        ui.invoke_lfo_node_moved(1, 0.6, -0.5, false);
+        assert_eq!(
+            ui.get_lfo_nodes().row_data(1).unwrap(),
+            LfoNode { x: 0.6, y: -0.5 }
+        );
+
+        // Segment 0 falls from 1 to -0.5; dragging its handle up bends it.
+        let before = params.lfo_shape(1).sample(0.425);
+        ui.invoke_lfo_curve_pressed(0);
+        ui.invoke_lfo_curve_dragged(0, 0.3);
+        assert!(params.lfo_shape(1).sample(0.425) > before);
+        ui.invoke_lfo_curve_reset(0);
+        assert_eq!(params.lfo_shape(1).points()[0].curve, 0.0);
+
+        ui.invoke_lfo_smooth_toggled();
+        assert!(ui.get_lfo_smooth() && params.lfo_shape(1).is_smooth());
+        ui.invoke_lfo_node_removed(1);
+        assert_eq!(ui.get_lfo_nodes().row_count(), 2);
+        assert!(!ui.invoke_lfo_shape_path(0, 100.0, 40.0, false).is_empty());
+
+        ui.invoke_lfo_shape_selected(7);
+        sync(&state);
+        assert_eq!(ui.get_lfo_shape(), 7);
+        assert_eq!(ui.get_lfo_nodes().row_count(), 8);
+
+        // Removing the first LFO moves the custom shape down with it.
+        let steps = params.custom_lfo_shape(1);
+        ui.set_selected_lfo(0);
+        ui.invoke_lfo_remove(0);
+        sync(&state);
+        assert_eq!(params.custom_lfo_shape(0), steps);
+        assert_eq!(params.custom_lfo_shape(1), None);
     }
 
     #[test]
@@ -1904,7 +2273,8 @@ mod tests {
             (150..500)
                 .filter(|&y| {
                     (left..right)
-                        .filter(|&x| pixel_at(image, x, y) == (17, 19, 25))
+                        // Plot background, or the LFO shape's area fill.
+                        .filter(|&x| matches!(pixel_at(image, x, y), (17, 19, 25) | (25, 38, 55)))
                         .count()
                         >= 450
                 })
@@ -2160,20 +2530,79 @@ mod tests {
     }
 
     #[test]
-    fn lfo_cycle_path_spans_the_box_and_follows_the_shape() {
-        let points = points(&lfo_cycle_path(Waveform::Sawtooth, 200.0, 50.0));
-        assert_eq!(points.len(), CYCLE_PATH_SEGMENTS + 1);
+    fn lfo_shape_path_spans_the_box_and_draws_jumps_vertically() {
+        let saw = LfoShape::from_waveform(Waveform::Sawtooth);
+        let points = points(&lfo_shape_path(&saw, 200.0, 50.0, false));
         assert_eq!(points[0], (0.0, 25.0));
-        assert!((points[CYCLE_PATH_SEGMENTS].0 - 200.0).abs() < 0.01);
+        assert!((points.last().unwrap().0 - 200.0).abs() < 0.01);
+        assert!(points.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+        // The jump at the middle is drawn from the top to the bottom.
+        let jump = points
+            .windows(2)
+            .find(|pair| (pair[0].0 - 100.0).abs() < 0.1 && (pair[1].0 - 100.0).abs() < 0.1)
+            .expect("vertices on both sides of the jump");
+        assert!(jump[0].1 < 0.1 && (jump[1].1 - 50.0).abs() < 0.1);
 
-        let paths: Vec<_> = (0..LfoShapeType::variant_count() as i32)
-            .map(|index| lfo_cycle_path(lfo_shape_from_index(index), 100.0, 40.0))
-            .collect();
-        for (index, path) in paths.iter().enumerate() {
-            assert!(!paths[index + 1..].contains(path));
+        let filled = lfo_shape_path(&saw, 200.0, 50.0, true);
+        assert!(filled.ends_with("L200.00 25.00 L0 25.00 Z"));
+    }
+
+    #[test]
+    fn lfo_presets_round_trip_through_the_dropdown() {
+        assert_eq!(LFO_PRESET_NAMES.len() as i32, LFO_CUSTOM_INDEX + 1);
+        for index in 0..LfoShapeType::variant_count() as i32 {
+            assert_eq!(lfo_dropdown_index(index, None), index);
+            // A custom shape equal to a parameter preset shows that preset.
+            let shape = LfoPreset::from_index(index).unwrap().shape();
+            assert_eq!(lfo_dropdown_index(0, Some(shape)), index);
         }
+        let shapes: Vec<_> = (0..LFO_CUSTOM_INDEX)
+            .map(|index| LfoPreset::from_index(index).unwrap().shape())
+            .collect();
+        for (index, shape) in shapes.iter().enumerate() {
+            assert!(!shapes[index + 1..].contains(shape));
+            assert_eq!(lfo_dropdown_index(0, Some(*shape)), index as i32);
+        }
+        assert_eq!(LfoPreset::from_index(LFO_CUSTOM_INDEX), None);
+        let mut edited = shapes[0];
+        edited.move_point(0, 0.3, 0.5);
+        assert_eq!(lfo_dropdown_index(0, Some(edited)), LFO_CUSTOM_INDEX);
         assert_eq!(lfo_shape_from_index(-1), Waveform::Sine);
         assert_eq!(lfo_shape_from_index(99), Waveform::Sawtooth);
+    }
+
+    #[test]
+    fn lfo_view_hides_handles_that_cannot_bend() {
+        let square = LfoShape::from_waveform(Waveform::Square);
+        let (nodes, handles) = lfo_shape_view_rows(&square);
+        assert_eq!(nodes.len(), 4);
+        assert!(handles.iter().all(|handle| !handle.visible));
+
+        let triangle = LfoShape::from_waveform(Waveform::Triangle);
+        let (_, handles) = lfo_shape_view_rows(&triangle);
+        assert!(handles.iter().all(|handle| handle.visible));
+    }
+
+    #[test]
+    fn dragging_a_curve_handle_moves_the_middle_with_the_pointer() {
+        let rise = LfoShape::new(&[LfoPoint::new(0.0, -1.0), LfoPoint::new(1.0, 1.0)], false);
+        for index in 0..2 {
+            let shape = if index == 0 {
+                rise
+            } else {
+                LfoShape::new(&[LfoPoint::new(0.0, 1.0), LfoPoint::new(1.0, -1.0)], false)
+            };
+            let middle = shape.sample(0.5);
+            for amount in [-0.3, 0.3] {
+                let mut bent = shape;
+                bent.set_curve(0, dragged_lfo_curve(&shape, 0, 0.0, amount).unwrap());
+                assert!((bent.sample(0.5) - middle) * amount > 0.0);
+            }
+        }
+        let flat = LfoShape::new(&[LfoPoint::new(0.0, 0.5), LfoPoint::new(1.0, 0.5)], false);
+        assert_eq!(dragged_lfo_curve(&flat, 0, 0.0, 0.3), None);
+        assert_eq!(snap_lfo_point(0.33, 0.3, true), (0.3125, 0.25));
+        assert_eq!(snap_lfo_point(0.33, 0.3, false), (0.33, 0.3));
     }
 
     #[test]

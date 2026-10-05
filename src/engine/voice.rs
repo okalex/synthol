@@ -199,8 +199,8 @@ impl Voice {
             .map(Oscillator::next_sample)
             .sum();
         for &slot in controls.effects.chain.slots() {
-            audio = self.filter_states[slot]
-                .process_sample(self.filters[slot].coefficients(), audio);
+            audio =
+                self.filter_states[slot].process_sample(self.filters[slot].coefficients(), audio);
         }
 
         if !self.is_active() {

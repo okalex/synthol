@@ -4,8 +4,8 @@
 //! the plugin's parameter ranges, which gives each destination a natural
 //! unit: semitones for pitch, octaves for cutoff, and a ratio for Q.
 
-use super::{MAX_EFFECTS, MAX_OSCILLATORS};
 use super::node::filter::{MAX_CUTOFF_HZ, MAX_Q, MIN_CUTOFF_HZ, MIN_Q};
+use super::{MAX_EFFECTS, MAX_OSCILLATORS};
 
 /// Number of routing slots per modulator.
 pub const MOD_SLOTS: usize = 4;
@@ -56,7 +56,11 @@ impl ModDestination {
         if slot == 0 {
             [Self::FilterCutoff, Self::FilterQ, Self::FilterMix]
         } else {
-            [Self::EffectCutoff(slot), Self::EffectQ(slot), Self::EffectMix(slot)]
+            [
+                Self::EffectCutoff(slot),
+                Self::EffectQ(slot),
+                Self::EffectMix(slot),
+            ]
         }
     }
 

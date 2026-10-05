@@ -160,6 +160,7 @@ fn wrap_phase(phase: f32) -> f32 {
 
 /// One sample of `waveform` at normalized `phase` without band-limiting, for
 /// sub-audio sources such as LFOs where hard edges are intended.
+#[cfg(test)]
 pub(crate) fn naive_waveform_sample(waveform: Waveform, phase: f32) -> f32 {
     waveform_sample(waveform, phase, 0.0)
 }
