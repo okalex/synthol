@@ -721,6 +721,140 @@ fn dynamic_lfos_round_trip_saved_parameter_values() {
 }
 
 #[test]
+fn envelopes_round_trip_saved_parameter_values_and_default_to_oscillator_one() {
+    use crate::engine::{MAX_ENVELOPES, ModDestination};
+    use crate::plugin::{ENV_PARAMS, SynthParams, SynthParamsParamId, mod_destination_index};
+    use truce::prelude::*;
+
+    let params = SynthParams::default();
+    assert_eq!(params.env_count.value_usize(), 1);
+    assert_eq!(
+        params.get_plain(ENV_PARAMS[0].destinations[0].into()),
+        Some(f64::from(mod_destination_index(Some(
+            ModDestination::OscLevel(0)
+        ))))
+    );
+    assert_eq!(
+        params.get_plain(ENV_PARAMS[0].amounts[0].into()),
+        Some(100.0)
+    );
+    assert_eq!(
+        ENV_PARAMS[0].adsr,
+        [
+            SynthParamsParamId::Attack,
+            SynthParamsParamId::Decay,
+            SynthParamsParamId::Sustain,
+            SynthParamsParamId::Release
+        ]
+    );
+    for (index, ids) in ENV_PARAMS.iter().enumerate() {
+        for (offset, id) in ids.all().into_iter().enumerate() {
+            params.set_normalized(id.into(), ((index + offset) % 10) as f64 / 10.0);
+        }
+    }
+    for count in 0..=MAX_ENVELOPES {
+        params.set_normalized(
+            SynthParamsParamId::EnvCount.into(),
+            count as f64 / MAX_ENVELOPES as f64,
+        );
+        let (ids, values) = params.collect_values();
+        let restored = SynthParams::default();
+        restored.restore_values(&ids.into_iter().zip(values).collect::<Vec<_>>());
+        assert_eq!(restored.env_count.value_usize(), count);
+        for ids in ENV_PARAMS {
+            for id in ids.all() {
+                assert_eq!(restored.get_plain(id.into()), params.get_plain(id.into()));
+            }
+        }
+    }
+}
+
+#[test]
+fn unrouted_oscillator_stops_at_note_off_while_env_one_releases() {
+    use crate::plugin::SynthParamsParamId;
+    use std::time::Duration;
+    use truce_test::driver;
+
+    let result = driver!(Plugin)
+        .duration(Duration::from_millis(100))
+        .set_param(SynthParamsParamId::OscCount, 1.0 / 3.0)
+        .set_param(SynthParamsParamId::Osc1Level, 0.0)
+        .set_param(SynthParamsParamId::FilterMix, 0.0)
+        .set_param(SynthParamsParamId::Osc2Phase, 0.25)
+        .script(|script| {
+            script.note_on(69, 1.0);
+            script.wait_ms(20);
+            script.note_off(69);
+        })
+        .run();
+    let boundary = (result.sample_rate * 0.02) as usize;
+    assert!(
+        result.output[0][..boundary]
+            .iter()
+            .any(|sample| sample.abs() > 0.9)
+    );
+    assert!(
+        result.output[0][boundary..]
+            .iter()
+            .all(|&sample| sample == 0.0)
+    );
+}
+
+#[test]
+fn envelope_one_does_not_gate_unrouted_oscillators_at_the_output() {
+    use crate::plugin::SynthParamsParamId;
+    use std::time::Duration;
+    use truce_test::driver;
+
+    let render = |envelopes| {
+        driver!(Plugin)
+            .duration(Duration::from_millis(50))
+            .set_param(SynthParamsParamId::OscCount, 1.0 / 3.0)
+            .set_param(SynthParamsParamId::Osc1Level, 0.0)
+            .set_param(SynthParamsParamId::Osc2Phase, 0.25)
+            .set_param(SynthParamsParamId::Attack, 1.0)
+            .set_param(SynthParamsParamId::EnvCount, envelopes)
+            .script(|script| script.note_on(69, 1.0))
+            .run()
+            .output[0]
+            .clone()
+    };
+    let ungated = render(0.0);
+    assert_eq!(render(0.25), ungated);
+    assert!(ungated.iter().any(|sample| sample.abs() > 0.5));
+}
+
+#[test]
+fn a_second_envelope_controls_its_routed_oscillator() {
+    use crate::engine::ModDestination;
+    use crate::plugin::{ModDestinationType, SynthParamsParamId, mod_destination_index};
+    use std::time::Duration;
+    use truce::prelude::ParamEnum;
+    use truce_test::driver;
+
+    let destination = f64::from(mod_destination_index(Some(ModDestination::OscLevel(1))))
+        / (ModDestinationType::variant_count() - 1) as f64;
+    let render = |attack| {
+        driver!(Plugin)
+            .duration(Duration::from_millis(50))
+            .set_param(SynthParamsParamId::OscCount, 1.0 / 3.0)
+            .set_param(SynthParamsParamId::Osc1Level, 0.0)
+            .set_param(SynthParamsParamId::EnvCount, 0.5)
+            .set_param(SynthParamsParamId::Env2Attack, attack)
+            .set_param(SynthParamsParamId::Env2Mod1Destination, destination)
+            .set_param(SynthParamsParamId::Env2Mod1Amount, 1.0)
+            .script(|script| script.note_on(69, 1.0))
+            .run()
+            .output[0]
+            .iter()
+            .copied()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()))
+    };
+    assert!(render(0.0) > 0.5);
+    assert!(render(1.0) < 0.02);
+}
+
+#[test]
 fn filter_mix_parameter_defaults_to_wet_and_bypasses_at_zero() {
     use crate::plugin::{SynthParams, SynthParamsParamId};
     use std::time::Duration;

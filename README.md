@@ -3,9 +3,10 @@
 A minimal polyphonic instrument plugin built with Rust and
 [Truce](https://github.com/truce-audio/truce). It accepts MIDI note-on and
 note-off events, uses MIDI note numbers for pitch, and scales amplitude by
-note-on velocity. Each voice mixes its oscillators and runs them through a filter, then a
-reusable ADSR envelope shapes it at the output stage (10 ms attack, 500 ms decay, -6 dB sustain, 1 s release) before output
-gain. Up to eight voices can sound at once; a **Voices** dropdown in the editor
+note-on velocity. Each voice applies its modulators to the oscillators and filter,
+mixes the oscillators, and runs them through the filter before output gain.
+The default **ENV 1** ADSR shapes **OSC 1's Level** (10 ms attack, 500 ms decay,
+-6 dB sustain, 1 s release). Up to eight voices can sound at once; a **Voices** dropdown in the editor
 (also a host-automatable parameter) sets the limit from Mono to 8. When all
 voices are busy, a new note steals the oldest releasing voice, or else the
 oldest held one. Voices are summed without normalization, so large chords can
@@ -25,9 +26,11 @@ needed.
 
 The editor opens at 1100 x 1100 logical pixels. Oscillators occupy the left
 column and Modulators the right, with larger waveform plots and their knobs
-directly underneath. The Filter spans both columns below them, followed by
-the full-width output envelope. LFO routing slots are stacked below the LFO
-controls; the content remains wheel-scrollable if it exceeds the window.
+directly underneath. The full-width, horizontally scrollable **Effects** chain
+below them currently contains a compact Filter card. ADSRs and LFOs share the
+Modulators group, with routing slots stacked below their controls; there is no
+separate output envelope. The content remains wheel-scrollable if it exceeds
+the window. Gain and Voices occupy the right side of the title bar.
 
 Each oscillator's tab has a type dropdown that selects the
 waveform: sine, square, triangle, or sawtooth. The square and sawtooth waves
@@ -44,7 +47,7 @@ shape as it plays from the chosen start phase, updating live while the knob
 turns. It is computed from the oscillator's own sample function rather than
 drawn by hand.
 
-The **Filter** row selects a 12 dB/octave (two-pole) low-pass, high-pass, or
+The **Filter** card selects a 12 dB/octave (two-pole) low-pass, high-pass, or
 band-pass filter, with **Cutoff** (20 Hz to 20 kHz) and **Q** (0.1 to 20)
 knobs, plus a **Mix** knob (0% to 100%); all are host-automatable. Mix defaults
 to 100%, preserving existing sounds. At 0% the filter is exactly bypassed;
@@ -65,11 +68,30 @@ axis, computed from the same coefficients the DSP uses and updating live as
 the controls move. The editor doesn't know the host sample rate, so the plot
 assumes 48 kHz; near Nyquist the real response can differ slightly.
 
-The tabbed **Modulators** group starts empty. **+ Add** creates an LFO and opens
-its tab, up to four LFOs. Each tab's × button removes that LFO, including the
-last one; later LFOs and their routes move up to fill the gap. Newly added LFOs
-start with default controls and no routes. The host-automatable **LFOs**
-parameter controls the active count (0 to 4).
+The tabbed **Modulators** group starts with **ENV 1**, routed to **OSC 1 Level**
+at 100%, and no LFOs. **+ ENV** and **+ LFO** add the chosen modulator and open
+its tab, up to four of each type. Each tab's × button removes it, including the
+last one; later modulators of the same type and their routes move up to fill
+the gap. New LFOs and additional envelopes start with no routes. Re-adding
+ENV 1 after removing all envelopes restores its default OSC 1 Level route.
+The host-automatable **Envelopes** and **LFOs** parameters independently control
+their active counts (0 to 4). The tab strip scrolls horizontally when needed.
+
+Each ADSR has its own attack, decay, sustain, release, and four routing slots.
+It starts on note-on, retriggers on repeated or stolen notes, and releases on
+note-off. A 100% route to an oscillator's Level multiplies its knob's level
+by the envelope: silence at zero and the knob's level at the envelope's peak.
+Partial amounts blend with the unchanged level, and negative amounts invert
+the envelope. Other destinations receive unipolar offsets along their knob
+ranges. Multiple envelopes are applied in tab order after LFO offsets.
+Voices remain allocated until their last active envelope finishes; with no
+envelopes, note-off ends the voice immediately. Unrouted oscillators are no
+longer shaped by an output-wide envelope. An oscillator without an active ADSR
+route to its Level follows a rectangular note gate: it plays at its configured
+level while the note is held and becomes silent immediately on note-off, even
+when another oscillator's ADSR is still releasing. LFO or pitch-only modulation
+does not extend that gate. Adding an oscillator during a released note's tail
+does not make it sound.
 
 Each LFO has independent controls and four routing slots. A dropdown selects its shape (sine, square, triangle, or sawtooth, without
 band-limiting), a **Rate** knob sets 0.01 Hz to 30 Hz on a log taper, and a
@@ -85,9 +107,9 @@ recently pressed note's line is solid and older notes' lines are faint (up to
 one per voice). Because the position comes from audio processing, a
 Sync LFO only advances while the host is processing the plugin.
 
-Each LFO can modulate any oscillator's **Pitch** and **Level** and filter
-**Cutoff**, **Q**, and **Mix**. Drag the amber **MOD** handle from the LFO Routing row onto one of
-those knobs (they light up while you drag) to route the LFO to it; to target
+Each modulator can modulate any oscillator's **Pitch** and **Level** and filter
+**Cutoff**, **Q**, and **Mix**. Drag the amber **MOD** handle from the Routing row onto one of
+those knobs (they light up while you drag) to route the selected modulator to it; to target
 another oscillator, select its tab first. A routed
 knob shows an amber arc: the faint arc covers the full swing around the knob's
 value, the bright arc shows the direction and depth of a positive LFO peak,
@@ -98,9 +120,10 @@ routing slots, each a host-automatable **Destination** and bipolar **Amount**
 (-100% to 100% of the destination's knob range). Each slot has a destination
 dropdown (listing the pitch and level of every active oscillator), an amount slider (Shift-drag for fine control, double-click to reset),
 the depth in the destination's units, and a × button that clears the slot.
-The selected Modulators tab determines which LFO the handle, routing list,
-and Alt-drag depth edits control. Arcs show that LFO's depth; the live dot
-includes the combined modulation of all active LFOs. A
+The selected Modulators tab determines which LFO or envelope the handle, routing list,
+and Alt-drag depth edits control. Arcs show its depth, with envelopes showing
+a one-sided range rather than a bipolar LFO swing; the live dot includes
+LFO and envelope modulation. A new envelope-to-level route starts at 100%. A
 new route starts at a modest depth: 1 semitone, 25% level, 1 octave of cutoff,
 ×2 Q, or 25 percentage points of Mix. The amounts are measured along each knob's own taper, so pitch moves
 in semitones, cutoff in octaves, and Q multiplicatively (shown as ×/÷).
@@ -112,15 +135,19 @@ modulating the cutoff doesn't affect other notes. Removing an oscillator clears
 the routes that target it, and routes to later oscillators follow them as they
 move up.
 
-Existing oscillator and first-LFO parameter IDs are retained. Sessions saved
+Existing oscillator, first-LFO, and ADSR parameter IDs are retained. The original
+Attack, Decay, Sustain, and Release parameters now control ENV 1. Older presets
+receive the default ENV 1 route to OSC 1 rather than output-wide shaping; this
+intentionally changes how additional, unrouted oscillators and filter tails sound.
+Sessions saved
 before the LFO count parameter existed load with no active LFOs; add the first
 LFO by setting the host's **LFOs** parameter to 1 to reactivate its saved routes
 without resetting them.
 
-The synth has no effects yet. The Slint editor
-currently provides a reusable ADSR graph/knob panel for the output envelope,
+The Slint editor
+provides a reusable ADSR graph/knob panel for envelope modulators,
 an output-gain slider, a voice-count dropdown, and the oscillator, filter, and
-LFO controls. Attack, decay, and release each range from 0 ms to 10 s
+modulator controls. Attack, decay, and release each range from 0 ms to 10 s
 on a skewed taper that gives short times more of the knob. The controls use
 Slint's software renderer and are drag-only. The editor passes every keyboard
 event back to the host, so Ableton's computer MIDI keyboard remains available

@@ -14,13 +14,13 @@ use crate::engine::node::filter::{MAX_Q, MIN_Q};
 use crate::engine::node::lfo::render_lfo_cycle;
 use crate::engine::node::oscillator::{naive_waveform_sample, render_cycle};
 use crate::engine::{
-    FilterMode, FilterSettings, MAX_LFOS, MAX_OSCILLATORS, MAX_VOICES, MOD_SLOTS, ModDestination,
-    ModRoute, Waveform,
+    FilterMode, FilterSettings, MAX_ENVELOPES, MAX_LFOS, MAX_OSCILLATORS, MAX_VOICES, MOD_SLOTS,
+    ModDestination, ModRoute, Waveform,
 };
 use crate::plugin::{
-    FilterType, LFO_PARAMS, LfoModeType, LfoShapeType, ModDestinationType, OSCILLATOR_PARAMS,
-    OscillatorType, SynthParams, SynthParamsParamId, decode_lfo_newest, decode_lfo_position,
-    mod_destination_from_index, mod_destination_index,
+    ENV_PARAMS, FilterType, LFO_PARAMS, LfoModeType, LfoShapeType, ModDestinationType,
+    OSCILLATOR_PARAMS, OscillatorType, SynthParams, SynthParamsParamId, decode_lfo_newest,
+    decode_lfo_position, mod_destination_from_index, mod_destination_index,
 };
 
 slint::include_modules!();
@@ -41,6 +41,27 @@ pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
 
 fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthParams> {
     let pending_edits = Rc::new(RefCell::new(Vec::<(SynthParamsParamId, f64)>::new()));
+    let selected_envelope = {
+        let ui = ui.as_weak();
+        move || {
+            ui.upgrade()
+                .expect("envelope callback requires a live editor")
+                .get_current_envelope() as usize
+        }
+    };
+    let selected_modulator = {
+        let ui = ui.as_weak();
+        move || {
+            let ui = ui
+                .upgrade()
+                .expect("modulation callback requires a live editor");
+            if ui.get_envelope_selected() {
+                Modulator::Envelope(ui.get_current_envelope() as usize)
+            } else {
+                Modulator::Lfo(ui.get_current_lfo() as usize)
+            }
+        }
+    };
 
     let state_for_ui = state.clone();
     ui.on_gain_changed(move |value| {
@@ -59,29 +80,64 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
     });
 
     let state_for_ui = state.clone();
+    let selected = selected_envelope.clone();
     ui.on_envelope_changed(move |id, value| {
-        if let Some(parameter) = envelope_parameter(id) {
+        if let Some(parameter) = envelope_parameter(selected(), id) {
             state_for_ui
                 .params()
                 .set_normalized(parameter.into(), f64::from(value));
         }
     });
     let state_for_ui = state.clone();
+    let selected = selected_envelope.clone();
     ui.on_envelope_sustain_level_changed(move |level| {
         let sustain_db = 20.0 * level.clamp(0.001, 1.0).log10();
         let normalized = ((sustain_db + 60.0) / 60.0).clamp(0.0, 1.0);
         state_for_ui
             .params()
-            .set_normalized(SynthParamsParamId::Sustain.into(), f64::from(normalized));
+            .set_normalized(ENV_PARAMS[selected()].adsr[2].into(), f64::from(normalized));
     });
     let pending_edits_for_ui = pending_edits.clone();
     let state_for_ui = state.clone();
+    let selected = selected_envelope.clone();
     ui.on_envelope_released(move |id| {
-        if let Some(parameter) = envelope_parameter(id) {
+        if let Some(parameter) = envelope_parameter(selected(), id) {
             enqueue_edit(
                 &pending_edits_for_ui,
                 (parameter, f64::from(state_for_ui.get_param(parameter))),
             );
+        }
+    });
+
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    let ui_for_callback = ui.as_weak();
+    ui.on_envelope_add(move || {
+        let count = state_for_ui.params().env_count.value_usize();
+        if count < MAX_ENVELOPES {
+            reset_modulator(
+                &state_for_ui,
+                &pending_edits_for_ui,
+                &ENV_PARAMS[count].all(),
+            );
+            set_param(
+                &state_for_ui,
+                &pending_edits_for_ui,
+                SynthParamsParamId::EnvCount,
+                (count + 1) as f64 / MAX_ENVELOPES as f64,
+            );
+            let ui = ui_for_callback
+                .upgrade()
+                .expect("envelope callback requires a live editor");
+            ui.set_envelope_selected(true);
+            ui.set_selected_envelope(count as i32);
+        }
+    });
+    let pending_edits_for_ui = pending_edits.clone();
+    let state_for_ui = state.clone();
+    ui.on_envelope_remove(move |index| {
+        if let Ok(index) = usize::try_from(index) {
+            remove_envelope(&state_for_ui, &pending_edits_for_ui, index);
         }
     });
 
@@ -210,6 +266,7 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
 
     let pending_edits_for_ui = pending_edits.clone();
     let state_for_ui = state.clone();
+    let ui_for_callback = ui.as_weak();
     ui.on_lfo_add(move || {
         let count = state_for_ui.params().lfo_count.value_usize();
         if count < MAX_LFOS {
@@ -220,6 +277,10 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
                 SynthParamsParamId::LfoCount,
                 lfo_count_to_normalized(count + 1),
             );
+            ui_for_callback
+                .upgrade()
+                .expect("LFO callback requires a live editor")
+                .set_envelope_selected(false);
         }
     });
     let pending_edits_for_ui = pending_edits.clone();
@@ -283,16 +344,16 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
     let set_slot = {
         let pending_edits = pending_edits.clone();
         let state = state.clone();
-        let selected = selected_lfo.clone();
+        let selected = selected_modulator.clone();
         move |slot: usize, destination: Option<Option<ModDestination>>, amount: Option<f32>| {
             if let Some(destination) = destination {
-                let id = LFO_PARAMS[selected()].destinations[slot];
+                let id = selected().routing().0[slot];
                 let normalized = destination_to_normalized(destination);
                 state.params().set_normalized(id.into(), normalized);
                 enqueue_edit(&pending_edits, (id, normalized));
             }
             if let Some(amount) = amount {
-                let id = LFO_PARAMS[selected()].amounts[slot];
+                let id = selected().routing().1[slot];
                 let normalized = amount_to_normalized(amount);
                 state.params().set_normalized(id.into(), normalized);
                 enqueue_edit(&pending_edits, (id, normalized));
@@ -302,56 +363,59 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
 
     let state_for_ui = state.clone();
     let set_slot_for_ui = set_slot.clone();
-    let selected = selected_lfo.clone();
+    let selected = selected_modulator.clone();
     ui.on_mod_assign(move |target| {
         let Some(destination) = mod_target(target) else {
             return;
         };
-        if let Some(slot) = slot_for_new_route(&read_routes(&state_for_ui, selected()), destination)
-        {
+        if let Some(slot) = slot_for_new_route(
+            &read_modulator_routes(&state_for_ui, selected()),
+            destination,
+        ) {
             set_slot_for_ui(
                 slot,
                 Some(Some(destination)),
-                Some(default_mod_amount(destination)),
+                Some(selected().default_amount(destination)),
             );
         }
     });
 
     let state_for_ui = state.clone();
     let set_slot_for_ui = set_slot.clone();
-    let selected = selected_lfo.clone();
+    let selected = selected_modulator.clone();
     ui.on_mod_destination_selected(move |slot, index| {
         let Some(slot) = mod_slot(slot) else {
             return;
         };
-        let routes = read_routes(&state_for_ui, selected());
+        let routes = read_modulator_routes(&state_for_ui, selected());
         let shown = shown_oscillators(state_for_ui.params().osc_count.value_usize(), &routes);
         let destination = destination_from_option(shown, index);
         let route = routes[slot];
         // A freshly routed slot starts at a useful depth rather than zero.
         let amount = match destination {
-            Some(destination) if route.amount == 0.0 => Some(default_mod_amount(destination)),
+            Some(destination) if route.amount == 0.0 => {
+                Some(selected().default_amount(destination))
+            }
             _ => None,
         };
         set_slot_for_ui(slot, Some(destination), amount);
     });
 
     let state_for_ui = state.clone();
-    let selected = selected_lfo.clone();
+    let selected = selected_modulator.clone();
     ui.on_mod_amount_changed(move |slot, value| {
         if let Some(slot) = mod_slot(slot) {
-            state_for_ui.params().set_normalized(
-                LFO_PARAMS[selected()].amounts[slot].into(),
-                f64::from(value),
-            );
+            state_for_ui
+                .params()
+                .set_normalized(selected().routing().1[slot].into(), f64::from(value));
         }
     });
     let pending_edits_for_ui = pending_edits.clone();
     let state_for_ui = state.clone();
-    let selected = selected_lfo.clone();
+    let selected = selected_modulator.clone();
     ui.on_mod_amount_released(move |slot| {
         if let Some(slot) = mod_slot(slot) {
-            let id = LFO_PARAMS[selected()].amounts[slot];
+            let id = selected().routing().1[slot];
             enqueue_edit(
                 &pending_edits_for_ui,
                 (id, f64::from(state_for_ui.get_param(id))),
@@ -367,33 +431,35 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
     });
 
     let state_for_ui = state.clone();
-    let selected = selected_lfo.clone();
+    let selected = selected_modulator.clone();
     ui.on_mod_depth_changed(move |target, depth| {
         let Some(destination) = mod_target(target) else {
             return;
         };
-        if let Some((slot, amount)) =
-            depth_edit(&read_routes(&state_for_ui, selected()), destination, depth)
-        {
+        if let Some((slot, amount)) = depth_edit(
+            &read_modulator_routes(&state_for_ui, selected()),
+            destination,
+            depth,
+        ) {
             state_for_ui.params().set_normalized(
-                LFO_PARAMS[selected()].amounts[slot].into(),
+                selected().routing().1[slot].into(),
                 amount_to_normalized(amount),
             );
         }
     });
     let pending_edits_for_ui = pending_edits.clone();
     let state_for_ui = state.clone();
-    let selected = selected_lfo.clone();
+    let selected = selected_modulator.clone();
     ui.on_mod_depth_released(move |target| {
         let Some(destination) = mod_target(target) else {
             return;
         };
-        let routes = read_routes(&state_for_ui, selected());
+        let routes = read_modulator_routes(&state_for_ui, selected());
         if let Some(slot) = routes
             .iter()
             .position(|route| route.destination == Some(destination))
         {
-            let id = LFO_PARAMS[selected()].amounts[slot];
+            let id = selected().routing().1[slot];
             enqueue_edit(
                 &pending_edits_for_ui,
                 (id, f64::from(state_for_ui.get_param(id))),
@@ -425,24 +491,27 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
         ui.set_gain_text(slint::SharedString::from(
             state.format_param(SynthParamsParamId::Volume),
         ));
-        ui.set_attack(state.get_param(SynthParamsParamId::Attack));
-        ui.set_attack_text(slint::SharedString::from(
-            state.format_param(SynthParamsParamId::Attack),
-        ));
-        ui.set_decay(state.get_param(SynthParamsParamId::Decay));
-        ui.set_decay_text(slint::SharedString::from(
-            state.format_param(SynthParamsParamId::Decay),
-        ));
-        let sustain = state.get_param(SynthParamsParamId::Sustain);
+        let env_count = state.params().env_count.value_usize();
+        let lfo_count = state.params().lfo_count.value_usize();
+        ui.set_env_count(env_count as i32);
+        ui.set_lfo_count(lfo_count as i32);
+        if env_count == 0 && lfo_count > 0 {
+            ui.set_envelope_selected(false);
+        } else if lfo_count == 0 && env_count > 0 {
+            ui.set_envelope_selected(true);
+        }
+        let [attack, decay, sustain_id, release] =
+            ENV_PARAMS[ui.get_current_envelope() as usize].adsr;
+        ui.set_attack(state.get_param(attack));
+        ui.set_attack_text(slint::SharedString::from(state.format_param(attack)));
+        ui.set_decay(state.get_param(decay));
+        ui.set_decay_text(slint::SharedString::from(state.format_param(decay)));
+        let sustain = state.get_param(sustain_id);
         ui.set_sustain(sustain);
         ui.set_sustain_level(10.0_f32.powf((-60.0 + sustain * 60.0) / 20.0));
-        ui.set_sustain_text(slint::SharedString::from(
-            state.format_param(SynthParamsParamId::Sustain),
-        ));
-        ui.set_release(state.get_param(SynthParamsParamId::Release));
-        ui.set_release_text(slint::SharedString::from(
-            state.format_param(SynthParamsParamId::Release),
-        ));
+        ui.set_sustain_text(slint::SharedString::from(state.format_param(sustain_id)));
+        ui.set_release(state.get_param(release));
+        ui.set_release_text(slint::SharedString::from(state.format_param(release)));
         ui.set_voices(state.params().voices.value_i32());
         let oscillator_count = state.params().osc_count.value_usize();
         let rows: Vec<_> = OSCILLATOR_PARAMS[..oscillator_count]
@@ -461,8 +530,6 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
         ));
         ui.set_filter_mix(state.get_param(SynthParamsParamId::FilterMix));
         ui.set_filter_mix_text(state.format_param(SynthParamsParamId::FilterMix).into());
-        let lfo_count = state.params().lfo_count.value_usize();
-        ui.set_lfo_count(lfo_count as i32);
         let selected = ui.get_current_lfo() as usize;
         let ids = &LFO_PARAMS[selected];
         ui.set_lfo_shape(
@@ -486,8 +553,8 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
             }
         }
 
-        let routes = if lfo_count > 0 {
-            read_routes(state, selected)
+        let routes = if lfo_count + env_count > 0 {
+            read_modulator_routes(state, selected_modulator())
         } else {
             [ModRoute::default(); MOD_SLOTS]
         };
@@ -521,7 +588,18 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
             });
             (read_routes(state, index), value)
         });
-        let mods = combined_knob_modulation(&routes, bases, &sources);
+        let mut mods = combined_knob_modulation(&routes, bases, &sources);
+        let envelope_sources: [_; MAX_ENVELOPES] = std::array::from_fn(|index| {
+            if index >= env_count {
+                return ([ModRoute::default(); MOD_SLOTS], None);
+            }
+            let meter = state.get_meter(ENV_PARAMS[index].level);
+            (
+                read_modulator_routes(state, Modulator::Envelope(index)),
+                (meter >= 1.0).then_some(meter - 1.0),
+            )
+        });
+        apply_envelope_knob_modulation(&mut mods, &envelope_sources, ui.get_envelope_selected());
         for (row, modulation) in mods.into_iter().enumerate() {
             if knob_mod_model.row_data(row).as_ref() != Some(&modulation) {
                 knob_mod_model.set_row_data(row, modulation);
@@ -579,14 +657,46 @@ fn reset_lfo(
     edits: &Rc<RefCell<Vec<(SynthParamsParamId, f64)>>>,
     index: usize,
 ) {
+    reset_modulator(state, edits, &LFO_PARAMS[index].all());
+}
+
+fn reset_modulator(
+    state: &PluginContext<SynthParams>,
+    edits: &Rc<RefCell<Vec<(SynthParamsParamId, f64)>>>,
+    ids: &[SynthParamsParamId],
+) {
     let infos = state.params().param_infos();
-    for id in LFO_PARAMS[index].all() {
+    for &id in ids {
         let info = infos
             .iter()
             .find(|info| info.id == u32::from(id))
-            .expect("LFO parameters must have parameter metadata");
+            .expect("modulator parameters must have parameter metadata");
         set_param(state, edits, id, info.range.normalize(info.default_plain));
     }
+}
+
+fn remove_envelope(
+    state: &PluginContext<SynthParams>,
+    edits: &Rc<RefCell<Vec<(SynthParamsParamId, f64)>>>,
+    removed: usize,
+) {
+    let count = state.params().env_count.value_usize();
+    if removed >= count {
+        return;
+    }
+    let values = ENV_PARAMS.map(|ids| ids.all().map(|id| f64::from(state.get_param(id))));
+    for index in removed..count - 1 {
+        for (id, value) in ENV_PARAMS[index].all().into_iter().zip(values[index + 1]) {
+            set_param(state, edits, id, value);
+        }
+    }
+    reset_modulator(state, edits, &ENV_PARAMS[count - 1].all());
+    set_param(
+        state,
+        edits,
+        SynthParamsParamId::EnvCount,
+        (count - 1) as f64 / MAX_ENVELOPES as f64,
+    );
 }
 
 fn remove_lfo(
@@ -646,15 +756,19 @@ fn remove_oscillator(
         }
     }
 
-    for (lfo, ids) in LFO_PARAMS.iter().enumerate() {
-        let routes = read_routes(state, lfo);
+    for source in (0..MAX_LFOS)
+        .map(Modulator::Lfo)
+        .chain((0..MAX_ENVELOPES).map(Modulator::Envelope))
+    {
+        let (destinations, amounts) = source.routing();
+        let routes = read_modulator_routes(state, source);
         let remapped = routes_after_removal(&routes, removed);
         for (slot, (old, new)) in routes.iter().zip(&remapped).enumerate() {
             if old.destination != new.destination {
                 set_param(
                     state,
                     edits,
-                    ids.destinations[slot],
+                    destinations[slot],
                     destination_to_normalized(new.destination),
                 );
             }
@@ -662,7 +776,7 @@ fn remove_oscillator(
                 set_param(
                     state,
                     edits,
-                    ids.amounts[slot],
+                    amounts[slot],
                     amount_to_normalized(new.amount),
                 );
             }
@@ -957,11 +1071,45 @@ fn mod_slot(slot: i32) -> Option<usize> {
 }
 
 fn read_routes(state: &PluginContext<SynthParams>, lfo: usize) -> [ModRoute; MOD_SLOTS] {
-    let ids = &LFO_PARAMS[lfo];
+    read_modulator_routes(state, Modulator::Lfo(lfo))
+}
+
+#[derive(Clone, Copy)]
+enum Modulator {
+    Lfo(usize),
+    Envelope(usize),
+}
+
+impl Modulator {
+    fn routing(
+        self,
+    ) -> (
+        [SynthParamsParamId; MOD_SLOTS],
+        [SynthParamsParamId; MOD_SLOTS],
+    ) {
+        match self {
+            Self::Lfo(index) => (LFO_PARAMS[index].destinations, LFO_PARAMS[index].amounts),
+            Self::Envelope(index) => (ENV_PARAMS[index].destinations, ENV_PARAMS[index].amounts),
+        }
+    }
+
+    fn default_amount(self, destination: ModDestination) -> f32 {
+        match (self, destination) {
+            (Self::Envelope(_), ModDestination::OscLevel(_)) => 1.0,
+            _ => default_mod_amount(destination),
+        }
+    }
+}
+
+fn read_modulator_routes(
+    state: &PluginContext<SynthParams>,
+    source: Modulator,
+) -> [ModRoute; MOD_SLOTS] {
+    let (destinations, amounts) = source.routing();
     std::array::from_fn(|slot| {
-        let destination = state.get_param(ids.destinations[slot]);
+        let destination = state.get_param(destinations[slot]);
         let index = (destination * destination_steps() as f32).round();
-        let amount = state.get_param(ids.amounts[slot]);
+        let amount = state.get_param(amounts[slot]);
         ModRoute {
             destination: mod_destination_from_index(index as u32),
             amount: (2.0 * amount - 1.0).clamp(-1.0, 1.0),
@@ -1091,6 +1239,8 @@ fn knob_modulation(
             depth,
             live: lfo.map_or(base, |lfo| (base + depth * lfo).clamp(0.0, 1.0)),
             live_visible: lfo.is_some() && depth != 0.0,
+            unipolar: false,
+            level_envelope: false,
         }
     })
 }
@@ -1122,19 +1272,228 @@ fn combined_knob_modulation(
     mods
 }
 
-fn envelope_parameter(id: i32) -> Option<SynthParamsParamId> {
-    match id {
-        0 => Some(SynthParamsParamId::Attack),
-        1 => Some(SynthParamsParamId::Decay),
-        2 => Some(SynthParamsParamId::Sustain),
-        3 => Some(SynthParamsParamId::Release),
-        _ => None,
+fn apply_envelope_knob_modulation(
+    mods: &mut [KnobModulation; ModDestination::ALL.len()],
+    sources: &[([ModRoute; MOD_SLOTS], Option<f32>); MAX_ENVELOPES],
+    envelope_selected: bool,
+) {
+    let sources = sources.map(|(routes, level)| {
+        (
+            crate::engine::modulation::ModDepths::from_routes(&routes),
+            level,
+        )
+    });
+    for destination in ModDestination::ALL {
+        let modulation = &mut mods[destination.index()];
+        modulation.unipolar = envelope_selected;
+        modulation.level_envelope =
+            envelope_selected && matches!(destination, ModDestination::OscLevel(_));
+        let mut value = destination.denormalize(modulation.live);
+        let mut live = modulation.live_visible;
+        for (depths, level) in sources {
+            if let Some(level) = level {
+                let depth = depths.depth(destination);
+                value = destination.modulate_envelope(value, level, depth);
+                live |= depth != 0.0;
+            }
+        }
+        modulation.live = destination.normalize(value);
+        modulation.live_visible = live && modulation.routed;
     }
+}
+
+fn envelope_parameter(envelope: usize, id: i32) -> Option<SynthParamsParamId> {
+    usize::try_from(id)
+        .ok()
+        .and_then(|id| ENV_PARAMS[envelope].adsr.get(id).copied())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn envelope_knob_markers_match_level_multiplication_after_lfo_offsets() {
+        let routes = [
+            ModRoute {
+                destination: Some(ModDestination::OscLevel(0)),
+                amount: 1.0,
+            },
+            ModRoute::default(),
+            ModRoute::default(),
+            ModRoute::default(),
+        ];
+        let lfo_routes = [
+            ModRoute {
+                destination: Some(ModDestination::OscLevel(0)),
+                amount: 0.25,
+            },
+            ModRoute::default(),
+            ModRoute::default(),
+            ModRoute::default(),
+        ];
+        let mut lfos = [([ModRoute::default(); MOD_SLOTS], None); MAX_LFOS];
+        lfos[0] = (lfo_routes, Some(1.0));
+        let mut envelopes = [([ModRoute::default(); MOD_SLOTS], None); MAX_ENVELOPES];
+        envelopes[0] = (routes, Some(0.5));
+        let mut mods = combined_knob_modulation(&routes, [0.25; ModDestination::ALL.len()], &lfos);
+        apply_envelope_knob_modulation(&mut mods, &envelopes, true);
+        let level = &mods[ModDestination::OscLevel(0).index()];
+        assert_eq!(level.live, 0.25);
+        assert!(level.live_visible && level.unipolar && level.level_envelope);
+        envelopes[0].1 = None;
+        let mut mods = combined_knob_modulation(&routes, [0.25; ModDestination::ALL.len()], &lfos);
+        apply_envelope_knob_modulation(&mut mods, &envelopes, false);
+        assert_eq!(mods[1].live, 0.5);
+        assert!(!mods[1].unipolar);
+    }
+
+    #[test]
+    fn envelopes_share_modulator_routing_and_preserve_independent_parameters() {
+        use slint::ComponentHandle;
+        use slint::platform::software_renderer::PremultipliedRgbaColor;
+
+        truce_slint::platform::ensure_platform();
+        let window = truce_slint::platform::create_slint_window();
+        window.set_size(slint::PhysicalSize::new(1100, 1100));
+        let ui = SynthUi::new().unwrap();
+        let params = Arc::new(SynthParams::default());
+        let state = editor_test_context(params.clone());
+        let sync = setup_editor(state.clone(), ui.clone_strong());
+        sync(&state);
+        assert_eq!(ui.get_env_count(), 1);
+        assert!(ui.get_envelope_selected());
+        assert_eq!(ui.get_current_envelope(), 0);
+        assert_eq!(
+            read_modulator_routes(&state, Modulator::Envelope(0))[0],
+            ModRoute {
+                destination: Some(ModDestination::OscLevel(0)),
+                amount: 1.0
+            }
+        );
+        assert!(ui.get_knob_mods().row_data(1).unwrap().level_envelope);
+        ui.show().unwrap();
+        let mut pixels = vec![PremultipliedRgbaColor::default(); 1100 * 1100];
+        assert!(window.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 1100);
+        }));
+        let dark_rows = (150..400)
+            .filter(|&y| {
+                (570..1070)
+                    .filter(|&x| {
+                        let pixel = pixels[y * 1100 + x];
+                        (pixel.red, pixel.green, pixel.blue) == (17, 19, 25)
+                    })
+                    .count()
+                    >= 450
+            })
+            .count();
+        assert!(
+            dark_rows >= 140,
+            "ENV 1 must display its ADSR plot in the Modulators column"
+        );
+
+        for index in 1..MAX_ENVELOPES {
+            ui.invoke_envelope_add();
+            sync(&state);
+            assert_eq!(ui.get_current_envelope(), index as i32);
+            assert_eq!(
+                read_modulator_routes(&state, Modulator::Envelope(index)),
+                [ModRoute::default(); MOD_SLOTS]
+            );
+            ui.invoke_envelope_changed(0, index as f32 / 4.0);
+            ui.invoke_envelope_released(0);
+            ui.invoke_mod_assign(ModDestination::FilterCutoff.index() as i32);
+            sync(&state);
+            assert_eq!(
+                read_modulator_routes(&state, Modulator::Envelope(index))[0].destination,
+                Some(ModDestination::FilterCutoff)
+            );
+        }
+        ui.invoke_envelope_add();
+        sync(&state);
+        assert_eq!(ui.get_env_count(), MAX_ENVELOPES as i32);
+        let before = ENV_PARAMS.map(|ids| ids.all().map(|id| state.get_param(id)));
+        ui.invoke_envelope_remove(1);
+        sync(&state);
+        assert_eq!(ui.get_env_count(), 3);
+        assert_eq!(ENV_PARAMS[1].all().map(|id| state.get_param(id)), before[2]);
+        assert_eq!(ENV_PARAMS[2].all().map(|id| state.get_param(id)), before[3]);
+        assert_eq!(ENV_PARAMS[0].all().map(|id| state.get_param(id)), before[0]);
+
+        ui.invoke_lfo_add();
+        sync(&state);
+        assert!(!ui.get_envelope_selected());
+        window.request_redraw();
+        assert!(window.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 1100);
+        }));
+        let click_tab = |x| {
+            let position = slint::LogicalPosition::new(x, 120.0);
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                    position,
+                    button: slint::platform::PointerEventButton::Left,
+                });
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                    position,
+                    button: slint::platform::PointerEventButton::Left,
+                });
+        };
+        click_tab(570.0);
+        sync(&state);
+        assert!(
+            ui.get_envelope_selected(),
+            "ENV and LFO tabs must be individually clickable"
+        );
+        assert_eq!(ui.get_current_envelope(), 0);
+        click_tab(790.0);
+        sync(&state);
+        assert!(
+            !ui.get_envelope_selected(),
+            "LFO tabs must sit after the ENV tabs"
+        );
+        ui.invoke_mod_assign(ModDestination::OscPitch(0).index() as i32);
+        sync(&state);
+        assert_eq!(
+            read_routes(&state, 0)[0].destination,
+            Some(ModDestination::OscPitch(0))
+        );
+        assert_eq!(
+            read_modulator_routes(&state, Modulator::Envelope(0))[0].destination,
+            Some(ModDestination::OscLevel(0))
+        );
+        for _ in 0..3 {
+            ui.invoke_envelope_remove(0);
+            sync(&state);
+        }
+        assert_eq!(ui.get_env_count(), 0);
+        assert!(!ui.get_envelope_selected());
+        ui.invoke_envelope_add();
+        sync(&state);
+        assert!(ui.get_envelope_selected());
+        assert_eq!(
+            read_modulator_routes(&state, Modulator::Envelope(0))[0].amount,
+            1.0
+        );
+        assert_eq!(params.attack.value(), SynthParams::default().attack.value());
+
+        params.set_normalized(SynthParamsParamId::OscCount.into(), 1.0 / 3.0);
+        set_param(
+            &state,
+            &Rc::new(RefCell::new(Vec::new())),
+            ENV_PARAMS[0].destinations[0],
+            destination_to_normalized(Some(ModDestination::OscLevel(1))),
+        );
+        ui.invoke_oscillator_remove(0);
+        sync(&state);
+        assert_eq!(
+            read_modulator_routes(&state, Modulator::Envelope(0))[0].destination,
+            Some(ModDestination::OscLevel(0))
+        );
+        assert_eq!(read_routes(&state, 0)[0], ModRoute::default());
+    }
 
     fn editor_test_context(params: Arc<SynthParams>) -> PluginContext<SynthParams> {
         use truce_slint::truce_core::editor::ClosureBridge;
@@ -1169,10 +1528,11 @@ mod tests {
 
         truce_slint::platform::ensure_platform();
         let window = truce_slint::platform::create_slint_window();
-        let (width, height) = EDITOR_SIZE;
+        let (width, height) = (EDITOR_SIZE.0, 1500);
         window.set_size(slint::PhysicalSize::new(width, height));
         let ui = SynthUi::new().unwrap();
         let params = Arc::new(SynthParams::default());
+        params.set_normalized(SynthParamsParamId::EnvCount.into(), 0.0);
         let state = editor_test_context(params.clone());
         let sync = setup_editor(state.clone(), ui.clone_strong());
         sync(&state);
@@ -1250,7 +1610,7 @@ mod tests {
             );
         }
         assert_eq!(
-            pixel_at(&active_pixels, 790, 200),
+            pixel_at(&active_pixels, 790, 150),
             (41, 45, 54),
             "LFO mode selector must be beside the shape selector above the plot"
         );
@@ -1260,21 +1620,31 @@ mod tests {
             "an empty Modulators column must not show an LFO plot"
         );
         for image in [&empty_pixels, &active_pixels] {
-            let filter_row = (plot_bottom + 100..height as usize)
-                .find(|&y| pixel_at(image, 190, y) == (17, 19, 25))
-                .expect("filter response must be below both columns");
-            assert_eq!(
-                pixel_at(image, 700, filter_row),
-                (17, 19, 25),
-                "filter response must expand across the full-width row"
+            let filter_plot_rows = (plot_bottom + 60..height as usize)
+                .filter(|&y| {
+                    pixel_at(image, 190, y) == (17, 19, 25)
+                        && pixel_at(image, 700, y) == (23, 25, 31)
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                filter_plot_rows.len() >= 140,
+                "filter response plot must be tall: {} background rows, bounds {:?}..{:?}",
+                filter_plot_rows.len(),
+                filter_plot_rows.first(),
+                filter_plot_rows.last()
             );
-            let envelope_row = (filter_row + 100..height as usize)
-                .find(|&y| pixel_at(image, 40, y) == (17, 19, 25))
-                .expect("output envelope must be below the filter");
             assert_eq!(
-                pixel_at(image, 1060, envelope_row),
-                (17, 19, 25),
-                "output envelope must span both columns"
+                pixel_at(image, 700, filter_plot_rows[0]),
+                (23, 25, 31),
+                "filter response must remain narrow inside the full-width Effects group"
+            );
+            assert!(
+                (filter_plot_rows.last().unwrap() + 150..height as usize).all(|y| pixel_at(
+                    image, 700, y
+                ) != (
+                    17, 19, 25
+                )),
+                "there must be no separate output envelope below Effects"
             );
         }
         assert_ne!(active_pixels, empty_pixels);

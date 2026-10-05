@@ -6,8 +6,9 @@ use truce::prelude::*;
 use crate::editor;
 use crate::engine::node::envelope::AdsrSettings;
 use crate::engine::{
-    FilterMode, FilterSettings, LfoMode, LfoPositions, LfoSettings, MAX_LFOS, MAX_OSCILLATORS,
-    MAX_VOICES, MOD_SLOTS, MidiEvent, ModDestination, ModRoute, SynthEngine, Waveform,
+    FilterMode, FilterSettings, LfoMode, LfoPositions, LfoSettings, MAX_ENVELOPES, MAX_LFOS,
+    MAX_OSCILLATORS, MAX_VOICES, MOD_SLOTS, MidiEvent, ModDestination, ModRoute, SynthEngine,
+    Waveform,
 };
 
 #[derive(ParamEnum)]
@@ -83,7 +84,7 @@ impl From<LfoModeType> for LfoMode {
     }
 }
 
-/// Where an LFO routing slot sends the LFO. Oscillators after the first
+/// Where a modulator routing slot sends its source. Oscillators after the first
 /// come last so sessions saved before they existed keep their routes.
 #[derive(ParamEnum)]
 pub enum ModDestinationType {
@@ -630,7 +631,367 @@ pub struct SynthParams {
         format = "format_percent"
     )]
     pub filter_mix: FloatParam,
+    #[param(name = "Envelopes", range = "discrete(0, 4)", default = 1)]
+    pub env_count: IntParam,
+    #[param(name = "ENV 1 Route 1 Destination", default = 2)]
+    pub env_1_mod_1_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 1 Route 1 Amount",
+        range = "linear(-100, 100)",
+        default = 100.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_1_mod_1_amount: FloatParam,
+    #[param(name = "ENV 1 Route 2 Destination", default = 0)]
+    pub env_1_mod_2_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 1 Route 2 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_1_mod_2_amount: FloatParam,
+    #[param(name = "ENV 1 Route 3 Destination", default = 0)]
+    pub env_1_mod_3_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 1 Route 3 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_1_mod_3_amount: FloatParam,
+    #[param(name = "ENV 1 Route 4 Destination", default = 0)]
+    pub env_1_mod_4_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 1 Route 4 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_1_mod_4_amount: FloatParam,
+    #[meter]
+    pub env_1_level: MeterSlot,
+    #[param(
+        name = "ENV 2 Attack",
+        range = "skewed(0, 10000, 0.2)",
+        default = 10.0,
+        unit = "ms"
+    )]
+    pub env_2_attack: FloatParam,
+    #[param(
+        name = "ENV 2 Decay",
+        range = "skewed(0, 10000, 0.2)",
+        default = 500.0,
+        unit = "ms"
+    )]
+    pub env_2_decay: FloatParam,
+    #[param(name = "ENV 2 Sustain", range = "linear(-60, 0)", default = -6.0, unit = "dB")]
+    pub env_2_sustain: FloatParam,
+    #[param(
+        name = "ENV 2 Release",
+        range = "skewed(0, 10000, 0.2)",
+        default = 1000.0,
+        unit = "ms"
+    )]
+    pub env_2_release: FloatParam,
+    #[param(name = "ENV 2 Route 1 Destination", default = 0)]
+    pub env_2_mod_1_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 2 Route 1 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_2_mod_1_amount: FloatParam,
+    #[param(name = "ENV 2 Route 2 Destination", default = 0)]
+    pub env_2_mod_2_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 2 Route 2 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_2_mod_2_amount: FloatParam,
+    #[param(name = "ENV 2 Route 3 Destination", default = 0)]
+    pub env_2_mod_3_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 2 Route 3 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_2_mod_3_amount: FloatParam,
+    #[param(name = "ENV 2 Route 4 Destination", default = 0)]
+    pub env_2_mod_4_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 2 Route 4 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_2_mod_4_amount: FloatParam,
+    #[meter]
+    pub env_2_level: MeterSlot,
+    #[param(
+        name = "ENV 3 Attack",
+        range = "skewed(0, 10000, 0.2)",
+        default = 10.0,
+        unit = "ms"
+    )]
+    pub env_3_attack: FloatParam,
+    #[param(
+        name = "ENV 3 Decay",
+        range = "skewed(0, 10000, 0.2)",
+        default = 500.0,
+        unit = "ms"
+    )]
+    pub env_3_decay: FloatParam,
+    #[param(name = "ENV 3 Sustain", range = "linear(-60, 0)", default = -6.0, unit = "dB")]
+    pub env_3_sustain: FloatParam,
+    #[param(
+        name = "ENV 3 Release",
+        range = "skewed(0, 10000, 0.2)",
+        default = 1000.0,
+        unit = "ms"
+    )]
+    pub env_3_release: FloatParam,
+    #[param(name = "ENV 3 Route 1 Destination", default = 0)]
+    pub env_3_mod_1_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 3 Route 1 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_3_mod_1_amount: FloatParam,
+    #[param(name = "ENV 3 Route 2 Destination", default = 0)]
+    pub env_3_mod_2_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 3 Route 2 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_3_mod_2_amount: FloatParam,
+    #[param(name = "ENV 3 Route 3 Destination", default = 0)]
+    pub env_3_mod_3_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 3 Route 3 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_3_mod_3_amount: FloatParam,
+    #[param(name = "ENV 3 Route 4 Destination", default = 0)]
+    pub env_3_mod_4_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 3 Route 4 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_3_mod_4_amount: FloatParam,
+    #[meter]
+    pub env_3_level: MeterSlot,
+    #[param(
+        name = "ENV 4 Attack",
+        range = "skewed(0, 10000, 0.2)",
+        default = 10.0,
+        unit = "ms"
+    )]
+    pub env_4_attack: FloatParam,
+    #[param(
+        name = "ENV 4 Decay",
+        range = "skewed(0, 10000, 0.2)",
+        default = 500.0,
+        unit = "ms"
+    )]
+    pub env_4_decay: FloatParam,
+    #[param(name = "ENV 4 Sustain", range = "linear(-60, 0)", default = -6.0, unit = "dB")]
+    pub env_4_sustain: FloatParam,
+    #[param(
+        name = "ENV 4 Release",
+        range = "skewed(0, 10000, 0.2)",
+        default = 1000.0,
+        unit = "ms"
+    )]
+    pub env_4_release: FloatParam,
+    #[param(name = "ENV 4 Route 1 Destination", default = 0)]
+    pub env_4_mod_1_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 4 Route 1 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_4_mod_1_amount: FloatParam,
+    #[param(name = "ENV 4 Route 2 Destination", default = 0)]
+    pub env_4_mod_2_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 4 Route 2 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_4_mod_2_amount: FloatParam,
+    #[param(name = "ENV 4 Route 3 Destination", default = 0)]
+    pub env_4_mod_3_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 4 Route 3 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_4_mod_3_amount: FloatParam,
+    #[param(name = "ENV 4 Route 4 Destination", default = 0)]
+    pub env_4_mod_4_destination: EnumParam<ModDestinationType>,
+    #[param(
+        name = "ENV 4 Route 4 Amount",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub env_4_mod_4_amount: FloatParam,
+    #[meter]
+    pub env_4_level: MeterSlot,
 }
+
+#[derive(Clone, Copy)]
+pub struct EnvelopeParamIds {
+    pub adsr: [SynthParamsParamId; 4],
+    pub destinations: [SynthParamsParamId; MOD_SLOTS],
+    pub amounts: [SynthParamsParamId; MOD_SLOTS],
+    pub level: SynthParamsParamId,
+}
+
+impl EnvelopeParamIds {
+    pub fn all(self) -> [SynthParamsParamId; 4 + 2 * MOD_SLOTS] {
+        std::array::from_fn(|index| match index {
+            0..4 => self.adsr[index],
+            index if index < 4 + MOD_SLOTS => self.destinations[index - 4],
+            index => self.amounts[index - 4 - MOD_SLOTS],
+        })
+    }
+}
+
+pub const ENV_PARAMS: [EnvelopeParamIds; MAX_ENVELOPES] = [
+    EnvelopeParamIds {
+        adsr: [
+            SynthParamsParamId::Attack,
+            SynthParamsParamId::Decay,
+            SynthParamsParamId::Sustain,
+            SynthParamsParamId::Release,
+        ],
+        destinations: [
+            SynthParamsParamId::Env1Mod1Destination,
+            SynthParamsParamId::Env1Mod2Destination,
+            SynthParamsParamId::Env1Mod3Destination,
+            SynthParamsParamId::Env1Mod4Destination,
+        ],
+        amounts: [
+            SynthParamsParamId::Env1Mod1Amount,
+            SynthParamsParamId::Env1Mod2Amount,
+            SynthParamsParamId::Env1Mod3Amount,
+            SynthParamsParamId::Env1Mod4Amount,
+        ],
+        level: SynthParamsParamId::Env1Level,
+    },
+    EnvelopeParamIds {
+        adsr: [
+            SynthParamsParamId::Env2Attack,
+            SynthParamsParamId::Env2Decay,
+            SynthParamsParamId::Env2Sustain,
+            SynthParamsParamId::Env2Release,
+        ],
+        destinations: [
+            SynthParamsParamId::Env2Mod1Destination,
+            SynthParamsParamId::Env2Mod2Destination,
+            SynthParamsParamId::Env2Mod3Destination,
+            SynthParamsParamId::Env2Mod4Destination,
+        ],
+        amounts: [
+            SynthParamsParamId::Env2Mod1Amount,
+            SynthParamsParamId::Env2Mod2Amount,
+            SynthParamsParamId::Env2Mod3Amount,
+            SynthParamsParamId::Env2Mod4Amount,
+        ],
+        level: SynthParamsParamId::Env2Level,
+    },
+    EnvelopeParamIds {
+        adsr: [
+            SynthParamsParamId::Env3Attack,
+            SynthParamsParamId::Env3Decay,
+            SynthParamsParamId::Env3Sustain,
+            SynthParamsParamId::Env3Release,
+        ],
+        destinations: [
+            SynthParamsParamId::Env3Mod1Destination,
+            SynthParamsParamId::Env3Mod2Destination,
+            SynthParamsParamId::Env3Mod3Destination,
+            SynthParamsParamId::Env3Mod4Destination,
+        ],
+        amounts: [
+            SynthParamsParamId::Env3Mod1Amount,
+            SynthParamsParamId::Env3Mod2Amount,
+            SynthParamsParamId::Env3Mod3Amount,
+            SynthParamsParamId::Env3Mod4Amount,
+        ],
+        level: SynthParamsParamId::Env3Level,
+    },
+    EnvelopeParamIds {
+        adsr: [
+            SynthParamsParamId::Env4Attack,
+            SynthParamsParamId::Env4Decay,
+            SynthParamsParamId::Env4Sustain,
+            SynthParamsParamId::Env4Release,
+        ],
+        destinations: [
+            SynthParamsParamId::Env4Mod1Destination,
+            SynthParamsParamId::Env4Mod2Destination,
+            SynthParamsParamId::Env4Mod3Destination,
+            SynthParamsParamId::Env4Mod4Destination,
+        ],
+        amounts: [
+            SynthParamsParamId::Env4Mod1Amount,
+            SynthParamsParamId::Env4Mod2Amount,
+            SynthParamsParamId::Env4Mod3Amount,
+            SynthParamsParamId::Env4Mod4Amount,
+        ],
+        level: SynthParamsParamId::Env4Level,
+    },
+];
 
 #[derive(Clone, Copy)]
 pub struct LfoParamIds {
@@ -919,6 +1280,59 @@ impl SynthParams {
         })
     }
 
+    fn envelope_settings(&self) -> [AdsrSettings; MAX_ENVELOPES] {
+        ENV_PARAMS.map(|ids| {
+            let [attack, decay, sustain, release] = ids.adsr.map(|id| {
+                self.get_plain(id.into())
+                    .expect("envelope parameter must exist")
+            });
+            AdsrSettings {
+                attack: Duration::from_secs_f64(attack / 1000.0),
+                decay: Duration::from_secs_f64(decay / 1000.0),
+                sustain_db: sustain as f32,
+                release: Duration::from_secs_f64(release / 1000.0),
+            }
+        })
+    }
+
+    fn envelope_routes(&self) -> [[ModRoute; MOD_SLOTS]; MAX_ENVELOPES] {
+        let amounts = [
+            [
+                &self.env_1_mod_1_amount,
+                &self.env_1_mod_2_amount,
+                &self.env_1_mod_3_amount,
+                &self.env_1_mod_4_amount,
+            ],
+            [
+                &self.env_2_mod_1_amount,
+                &self.env_2_mod_2_amount,
+                &self.env_2_mod_3_amount,
+                &self.env_2_mod_4_amount,
+            ],
+            [
+                &self.env_3_mod_1_amount,
+                &self.env_3_mod_2_amount,
+                &self.env_3_mod_3_amount,
+                &self.env_3_mod_4_amount,
+            ],
+            [
+                &self.env_4_mod_1_amount,
+                &self.env_4_mod_2_amount,
+                &self.env_4_mod_3_amount,
+                &self.env_4_mod_4_amount,
+            ],
+        ];
+        std::array::from_fn(|index| {
+            std::array::from_fn(|slot| ModRoute {
+                destination: mod_destination_from_index(
+                    self.get_plain(ENV_PARAMS[index].destinations[slot].into())
+                        .expect("envelope route parameter must exist") as u32,
+                ),
+                amount: amounts[index][slot].read() / 100.0,
+            })
+        })
+    }
+
     fn mod_routes(&self) -> [[ModRoute; MOD_SLOTS]; MAX_LFOS] {
         let slots = [
             [
@@ -994,12 +1408,12 @@ impl PluginLogic for Synth {
         events: &EventList,
         context: &mut ProcessContext,
     ) -> ProcessStatus {
-        state.engine.set_output_envelope_settings(AdsrSettings {
-            attack: Duration::from_secs_f64(f64::from(params.attack.read()) / 1000.0),
-            decay: Duration::from_secs_f64(f64::from(params.decay.read()) / 1000.0),
-            sustain_db: params.sustain.read() as f32,
-            release: Duration::from_secs_f64(f64::from(params.release.read()) / 1000.0),
-        });
+        state
+            .engine
+            .set_envelope_count(params.env_count.value_usize());
+        for (index, settings) in params.envelope_settings().into_iter().enumerate() {
+            state.engine.set_envelope(index, settings);
+        }
 
         state.engine.set_voice_limit(params.voices.value_usize());
         state
@@ -1052,6 +1466,9 @@ impl PluginLogic for Synth {
             for (index, routes) in params.mod_routes().iter().enumerate() {
                 state.engine.set_lfo_modulation(index, routes);
             }
+            for (index, routes) in params.envelope_routes().iter().enumerate() {
+                state.engine.set_envelope_modulation(index, routes);
+            }
             let sample = state.engine.next_sample(db_to_linear(params.volume.read()));
             for channel in 0..output_channels {
                 buffer.output(channel)[sample_index] = sample;
@@ -1060,6 +1477,13 @@ impl PluginLogic for Synth {
 
         for (index, ids) in LFO_PARAMS.iter().enumerate() {
             publish_lfo_positions(context, ids, &state.engine.lfo_positions_at(index));
+        }
+        for (index, ids) in ENV_PARAMS.iter().enumerate() {
+            let level = state
+                .engine
+                .envelope_level(index)
+                .map_or(0.0, |level| level + 1.0);
+            context.set_meter(ids.level, level);
         }
 
         if state.engine.has_active_note() {

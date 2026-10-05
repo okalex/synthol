@@ -5,6 +5,8 @@ export struct KnobModulation {
     depth: float,
     live: float,
     live-visible: bool,
+    unipolar: bool,
+    level-envelope: bool,
 }
 
 // One arc segment around a knob, between normalized knob values `from` and
@@ -122,15 +124,20 @@ export component SynthKnob inherits Rectangle {
     // The full swing of the LFO (both directions), with the positive
     // direction drawn brighter so the depth's sign is visible.
     if root.modulation.routed: KnobArc {
-        from: clamp(root.shown-value - root.modulation.depth, 0.0, 1.0);
-        to: clamp(root.shown-value + root.modulation.depth, 0.0, 1.0);
+        from: root.modulation.level-envelope
+            ? root.shown-value * (1.0 - abs(root.modulation.depth))
+            : root.modulation.unipolar ? root.shown-value : clamp(root.shown-value - root.modulation.depth, 0.0, 1.0);
+        to: root.modulation.level-envelope
+            ? root.shown-value : clamp(root.shown-value + root.modulation.depth, 0.0, 1.0);
         stroke: #f2b84d;
         opacity: 0.3;
     }
 
     if root.modulation.routed: KnobArc {
         from: root.shown-value;
-        to: clamp(root.shown-value + root.modulation.depth, 0.0, 1.0);
+        to: root.modulation.level-envelope
+            ? root.shown-value * (1.0 - abs(root.modulation.depth))
+            : clamp(root.shown-value + root.modulation.depth, 0.0, 1.0);
         stroke: #f2b84d;
     }
 
@@ -479,6 +486,7 @@ export component AdsrEnvelopeGraph inherits Rectangle {
 }
 
 export component AdsrEnvelopePanel inherits Rectangle {
+    in property <bool> compact: false;
     in-out property <float> attack: 0.251;
     in-out property <float> decay: 0.549;
     in-out property <float> sustain: 0.9;
@@ -499,11 +507,11 @@ export component AdsrEnvelopePanel inherits Rectangle {
     border-color: #30343d;
 
     VerticalLayout {
-        padding: 16px;
+        padding: root.compact ? 0px : 16px;
         spacing: 12px;
 
-        Text {
-            text: "OUTPUT ENVELOPE";
+        if !root.compact: Text {
+            text: "ADSR ENVELOPE";
             font-size: 11px;
             font-weight: 700;
             color: #9299a8;
@@ -511,7 +519,7 @@ export component AdsrEnvelopePanel inherits Rectangle {
 
         AdsrEnvelopeGraph {
             width: 100%;
-            height: 190px;
+            height: root.compact ? 160px : 190px;
             attack: root.attack;
             decay: root.decay;
             sustain-level: root.sustain-level;
@@ -524,9 +532,10 @@ export component AdsrEnvelopePanel inherits Rectangle {
 
         HorizontalLayout {
             alignment: center;
-            spacing: 18px;
+            spacing: root.compact ? 12px : 18px;
 
             SynthKnob {
+                height: root.compact ? 88px : 112px;
                 value <=> root.attack;
                 label: "ATTACK";
                 value-text: root.attack-text;
@@ -537,6 +546,7 @@ export component AdsrEnvelopePanel inherits Rectangle {
             }
 
             SynthKnob {
+                height: root.compact ? 88px : 112px;
                 value <=> root.decay;
                 label: "DECAY";
                 value-text: root.decay-text;
@@ -547,6 +557,7 @@ export component AdsrEnvelopePanel inherits Rectangle {
             }
 
             SynthKnob {
+                height: root.compact ? 88px : 112px;
                 value <=> root.sustain;
                 label: "SUSTAIN";
                 value-text: root.sustain-text;
@@ -557,6 +568,7 @@ export component AdsrEnvelopePanel inherits Rectangle {
             }
 
             SynthKnob {
+                height: root.compact ? 88px : 112px;
                 value <=> root.release;
                 label: "RELEASE";
                 value-text: root.release-text;

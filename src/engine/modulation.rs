@@ -1,4 +1,4 @@
-//! LFO modulation routing. A route's depth is a fraction of its
+//! Modulation routing. An LFO route's depth is a fraction of its
 //! destination's control range, so a depth of 0.25 swings the target a
 //! quarter of the way across its knob in each direction. The ranges match
 //! the plugin's parameter ranges, which gives each destination a natural
@@ -7,7 +7,7 @@
 use super::MAX_OSCILLATORS;
 use super::node::filter::{MAX_CUTOFF_HZ, MAX_Q, MIN_CUTOFF_HZ, MIN_Q};
 
-/// Number of LFO routing slots.
+/// Number of routing slots per modulator.
 pub const MOD_SLOTS: usize = 4;
 /// The oscillator pitch control spans this many semitones either way.
 pub const MAX_PITCH_SEMITONES: f32 = 24.0;
@@ -105,9 +105,23 @@ impl ModDestination {
         }
         self.denormalize(self.normalize(value) + offset)
     }
+
+    pub fn modulate_envelope(self, value: f32, envelope: f32, depth: f32) -> f32 {
+        if matches!(self, Self::OscLevel(_)) {
+            let depth = depth.clamp(-1.0, 1.0);
+            let shaped = if depth < 0.0 {
+                1.0 - envelope
+            } else {
+                envelope
+            };
+            value * (1.0 - depth.abs() + depth.abs() * shaped)
+        } else {
+            self.modulate(value, envelope * depth)
+        }
+    }
 }
 
-/// One routing slot: the LFO drives `destination` by `amount`, a signed
+/// One routing slot: the source drives `destination` by `amount`, a signed
 /// fraction of the destination's control range (-1 to 1).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ModRoute {
@@ -146,6 +160,21 @@ impl ModDepths {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn envelopes_multiply_levels_and_modulate_other_controls_unipolarly() {
+        let level = ModDestination::OscLevel(0);
+        assert_eq!(level.modulate_envelope(0.4, 0.0, 1.0), 0.0);
+        assert_eq!(level.modulate_envelope(0.4, 1.0, 1.0), 0.4);
+        assert_eq!(level.modulate_envelope(0.4, 0.5, 1.0), 0.2);
+        assert_eq!(level.modulate_envelope(0.4, 0.0, 0.5), 0.2);
+        assert_eq!(level.modulate_envelope(0.4, 0.0, -1.0), 0.4);
+        assert_eq!(level.modulate_envelope(0.4, 1.0, -1.0), 0.0);
+        assert_eq!(level.modulate_envelope(0.4, 0.0, 0.0), 0.4);
+        let pitch = ModDestination::OscPitch(0);
+        assert_eq!(pitch.modulate_envelope(0.0, 0.0, 0.5), 0.0);
+        assert_eq!(pitch.modulate_envelope(0.0, 1.0, 0.5), 24.0);
+    }
 
     #[test]
     fn normalize_and_denormalize_round_trip() {

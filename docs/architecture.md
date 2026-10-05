@@ -5,7 +5,7 @@
 Synthol is currently a small Truce instrument: MIDI drives up to eight
 oscillator voices (sine, square, triangle, or sawtooth) through a 12 dB/octave
 filter, and a Slint editor controls output gain, the oscillator waveform, the
-filter, the output envelope, an LFO that can modulate oscillator pitch and
+filter, ADSR and LFO modulators that can modulate oscillator pitch and
 level and filter cutoff and Q, and the polyphony limit. The intended product is a modular synthesizer where users
 can add and connect oscillators, envelopes, LFOs, filters, effects, and other
 modules.
@@ -20,16 +20,22 @@ belong off the real-time audio thread.
 The code is being migrated incrementally. The current foundation separates
 the Truce adapter, Slint editor bridge, engine, MIDI event type,
 multi-waveform oscillator, biquad filter, and reusable ADSR envelope. Engine
-construction compiles a fixed typed oscillator-to-filter-to-output-envelope-to-output
+construction compiles a fixed typed oscillator-to-filter-to-output
 graph once; processing follows
 its prepared order without compiling or allocating in the audio callback.
-Output gain is applied after the envelope. The filter (`engine/node/filter.rs`)
+ADSRs are control sources, not audio nodes; ENV 1 defaults to multiplying
+OSC 1's level. Output gain is applied after the filter. The filter (`engine/node/filter.rs`)
 is an RBJ-cookbook biquad in low-pass, high-pass, or band-pass mode. Because
 LFO modulation can move cutoff and Q per note, each voice owns a `Filter` that
 recomputes its coefficients only when its modulated settings change, plus its
 own filter state, cleared when the voice goes silent. The editor's response
 plot evaluates the same coefficients' magnitude response for the unmodulated
-settings. Each voice owns an LFO (`engine/node/lfo.rs`), and the engine owns
+settings. The editor's full-width Effects section is a horizontally scrollable
+row of compact effect cards, currently containing only the filter. Its type
+selector sits above the response plot, with cutoff, Q, and mix controls below.
+Horizontal wheel or trackpad scrolling leaves knob drags unaffected. Dynamic
+effect insertion and removal remain future work.
+Each voice owns an LFO (`engine/node/lfo.rs`), and the engine owns
 one more shared, free-running LFO for Sync mode; `engine/modulation.rs` routes
 them to destinations. See "MIDI, notes, voices, and
 modulation" below. This fixed graph is an internal
@@ -246,6 +252,31 @@ knob's depth arc and, from the newest LFO position, its live modulated value.
 Dropping the drag handle on a knob fills the first empty slot unless that
 destination is already routed. Alt-dragging a knob sets the total depth on
 that destination by adjusting the first slot that targets it.
+
+Each voice also owns up to `MAX_ENVELOPES` (4) independent ADSRs. They start
+on note-on and release on note-off, and their active count is controlled by
+the host's `Envelopes` parameter. ENV 1 retains the original `attack`, `decay`,
+`sustain`, and `release` parameter IDs; the remaining envelopes and each
+envelope's four routing slots have separate host parameters. Count, settings,
+and routes are preset data; level meters are not.
+The Modulators tabs select either an ADSR or an LFO, sharing routing, drag/drop,
+depth edits, and destination-remapping on oscillator removal. Adding/removing
+an envelope resets/compacts its parameter slots like an LFO.
+
+ADSR values are advanced before audio generation. After the summed bipolar
+LFO offset, each envelope applies its destination depth in envelope order.
+Oscillator levels are multiplied by `1 - abs(depth) + abs(depth) * shaped`,
+where `shaped` is the envelope for positive depth and its inverse for negative
+depth. Other destinations receive `depth * envelope` normalized offsets.
+The default ENV 1 route is OSC 1 Level at 100%; additional envelopes are unrouted.
+There is no output-wide envelope stage. A releasing voice survives until all
+its ADSRs finish; without ADSRs it stops on note-off. Oscillators without a
+nonzero active ADSR depth on their Level are gated by the
+held-note state, so they cannot sound during another oscillator's release tail.
+This rectangular gate leaves their configured level and other modulation
+unchanged while the note is held. After each block, the
+newest sounding voice's envelope levels are published as `1 + level`, with 0
+meaning no active voice, for the knob's live modulation marker.
 
 ## Parameters and host integration
 

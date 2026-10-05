@@ -18,6 +18,8 @@ use voice::{Voice, VoiceControls};
 
 /// Hard upper bound on simultaneous voices.
 pub const MAX_VOICES: usize = 8;
+/// Hard upper bound on ADSR modulators per voice.
+pub const MAX_ENVELOPES: usize = 4;
 /// Hard upper bound on oscillators per voice.
 pub const MAX_OSCILLATORS: usize = 4;
 /// Hard upper bound on independently routed LFOs.
@@ -30,9 +32,9 @@ pub struct OscillatorSettings {
     pub waveform: Waveform,
     /// Normalized phase (`0.0..1.0`, 0 to 360 degrees) new notes start from.
     pub start_phase: f32,
-    /// Transposition in semitones, before LFO modulation.
+    /// Transposition in semitones, before modulation.
     pub pitch: f32,
-    /// Gain (`0.0..=1.0`), before LFO modulation.
+    /// Gain (`0.0..=1.0`), before modulation.
     pub level: f32,
 }
 
@@ -65,6 +67,7 @@ pub struct SynthEngine {
     /// How many oscillators, from the first, sound.
     oscillator_count: usize,
     depths: [ModDepths; MAX_LFOS],
+    envelope_depths: [ModDepths; MAX_ENVELOPES],
     /// The free-running LFO shared by every voice in sync mode. In trigger
     /// mode each voice runs its own instead.
     sync_lfos: [Lfo; MAX_LFOS],
@@ -87,6 +90,16 @@ impl Default for SynthEngine {
             oscillators: [OscillatorSettings::default(); MAX_OSCILLATORS],
             oscillator_count: 1,
             depths: [ModDepths::default(); MAX_LFOS],
+            envelope_depths: std::array::from_fn(|index| {
+                ModDepths::from_routes(if index == 0 {
+                    &[ModRoute {
+                        destination: Some(ModDestination::OscLevel(0)),
+                        amount: 1.0,
+                    }]
+                } else {
+                    &[]
+                })
+            }),
             sync_lfos: Default::default(),
             lfo_modes: [LfoMode::default(); MAX_LFOS],
             lfo_count: 0,
@@ -117,13 +130,36 @@ impl SynthEngine {
         prepared
     }
 
+    /// Compatibility entry point for the original ADSR controls, now ENV 1.
     pub fn set_output_envelope_settings(&mut self, settings: AdsrSettings) {
+        self.set_envelope(0, settings);
+    }
+
+    pub fn set_envelope_count(&mut self, count: usize) {
         for voice in &mut self.voices {
-            voice.set_envelope_settings(settings);
+            voice.set_envelope_count(count.min(MAX_ENVELOPES));
         }
     }
 
-    /// Set the filter every voice's oscillator is routed through, before LFO
+    pub fn set_envelope(&mut self, index: usize, settings: AdsrSettings) {
+        assert!(index < MAX_ENVELOPES);
+        for voice in &mut self.voices {
+            voice.set_envelope_settings(index, settings);
+        }
+    }
+
+    pub fn set_envelope_modulation(&mut self, index: usize, routes: &[ModRoute]) {
+        self.envelope_depths[index] = ModDepths::from_routes(routes);
+    }
+
+    pub fn envelope_level(&self, index: usize) -> Option<f32> {
+        self.voices
+            .iter()
+            .filter(|voice| voice.is_active())
+            .max_by_key(|voice| voice.started_at())
+            .and_then(|voice| voice.envelope_level_at(index))
+    }
+    /// Set the filter every voice's oscillator is routed through, before
     /// modulation. Each voice recomputes its coefficients only when its
     /// (modulated) settings change, so this is cheap to call per sample.
     pub fn set_filter_settings(&mut self, settings: FilterSettings) {
@@ -149,14 +185,14 @@ impl SynthEngine {
         self.set_oscillator_level(index, settings.level);
     }
 
-    /// Transpose oscillator `index` by `semitones`, before LFO modulation.
+    /// Transpose oscillator `index` by `semitones`, before modulation.
     pub fn set_oscillator_pitch(&mut self, index: usize, semitones: f32) {
         if let Some(oscillator) = self.oscillators.get_mut(index) {
             oscillator.pitch = semitones;
         }
     }
 
-    /// Set oscillator `index`'s gain (`0.0..=1.0`), before LFO modulation.
+    /// Set oscillator `index`'s gain (`0.0..=1.0`), before modulation.
     pub fn set_oscillator_level(&mut self, index: usize, level: f32) {
         if let Some(oscillator) = self.oscillators.get_mut(index) {
             oscillator.level = level;
@@ -341,6 +377,7 @@ impl SynthEngine {
             oscillators: self.oscillators,
             oscillator_count: self.oscillator_count,
             depths: self.depths,
+            envelope_depths: self.envelope_depths,
             sync_lfos,
             lfo_count: self.lfo_count,
         };
@@ -372,6 +409,117 @@ impl SynthEngine {
 mod tests {
     use super::SynthEngine;
     use crate::engine::midi::MidiEvent;
+
+    #[test]
+    fn unshaped_oscillators_follow_the_note_gate_not_other_envelope_tails() {
+        for modulation in 0..4 {
+            let mut engine = SynthEngine::default();
+            engine.reset(48_000.0);
+            engine.set_filter_settings(super::FilterSettings {
+                mix: 0.0,
+                ..Default::default()
+            });
+            engine.set_oscillator_level(0, 0.0);
+            engine.set_oscillator(
+                1,
+                super::OscillatorSettings {
+                    waveform: super::Waveform::Square,
+                    start_phase: 0.25,
+                    ..Default::default()
+                },
+            );
+            match modulation {
+                1 => engine.set_envelope_modulation(
+                    0,
+                    &[
+                        route(ModDestination::OscLevel(0), 1.0),
+                        route(ModDestination::OscPitch(1), 0.1),
+                        route(ModDestination::OscLevel(1), 0.0),
+                    ],
+                ),
+                2 => engine.set_envelope_modulation(1, &[route(ModDestination::OscLevel(1), 1.0)]),
+                3 => {
+                    engine.set_lfo_count(1);
+                    engine.set_lfo_modulation(0, &[route(ModDestination::OscLevel(1), -0.25)]);
+                }
+                _ => {}
+            }
+            note_on(&mut engine, 69);
+            render(&mut engine, 480);
+            engine.set_oscillator_count(2);
+            let held = render(&mut engine, 480);
+            assert!(
+                rms(&held) > 0.7,
+                "new oscillator must play at its level while held"
+            );
+            engine.handle_event(MidiEvent::NoteOff { note: 69 });
+            assert!(engine.has_active_note(), "ENV 1 should still be releasing");
+            assert!(
+                render(&mut engine, 480).iter().all(|&sample| sample == 0.0),
+                "unshaped oscillator must stop at note-off, case {modulation}"
+            );
+            engine.set_oscillator_count(1);
+            engine.set_oscillator_count(2);
+            assert!(
+                render(&mut engine, 480).iter().all(|&sample| sample == 0.0),
+                "adding an oscillator during release must not sound"
+            );
+            note_on(&mut engine, 69);
+            assert!(
+                rms(&render(&mut engine, 480)) > 0.7,
+                "the next note must start the rectangular gate again"
+            );
+        }
+    }
+
+    #[test]
+    fn independent_envelopes_release_until_the_last_one_finishes() {
+        use super::{AdsrSettings, ModDestination, ModRoute};
+        use std::time::Duration;
+
+        let mut engine = SynthEngine::default();
+        engine.reset(1000.0);
+        engine.set_envelope_count(2);
+        for (index, release) in [(0, 10), (1, 30)] {
+            engine.set_envelope(
+                index,
+                AdsrSettings {
+                    attack: Duration::ZERO,
+                    decay: Duration::ZERO,
+                    sustain_db: 0.0,
+                    release: Duration::from_millis(release),
+                },
+            );
+            engine.set_envelope_modulation(
+                index,
+                &[ModRoute {
+                    destination: Some(ModDestination::OscLevel(0)),
+                    amount: 1.0,
+                }],
+            );
+        }
+        note_on(&mut engine, 60);
+        engine.next_sample(1.0);
+        assert_eq!(engine.envelope_level(0), Some(1.0));
+        assert_eq!(engine.envelope_level(1), Some(1.0));
+        engine.handle_event(MidiEvent::NoteOff { note: 60 });
+        for _ in 0..10 {
+            engine.next_sample(1.0);
+        }
+        assert_eq!(engine.envelope_level(0), Some(0.0));
+        assert!((engine.envelope_level(1).unwrap() - 2.0 / 3.0).abs() < 1e-6);
+        for _ in 0..20 {
+            engine.next_sample(1.0);
+        }
+        assert!(!engine.has_active_note());
+        assert_eq!(engine.envelope_level(1), None);
+
+        engine.set_envelope_count(0);
+        note_on(&mut engine, 60);
+        assert!(engine.has_active_note());
+        engine.handle_event(MidiEvent::NoteOff { note: 60 });
+        assert!(!engine.has_active_note());
+    }
 
     #[test]
     fn starts_silent_and_plays_a_note() {
@@ -462,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn output_envelope_precedes_output_gain() {
+    fn oscillator_level_envelope_precedes_output_gain() {
         let mut engine = SynthEngine::default();
         engine.reset(44_100.0);
         engine.handle_event(MidiEvent::NoteOn {
