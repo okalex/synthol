@@ -4455,6 +4455,8 @@ dependencies = [
 name = "synthol-vst"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "slint",
  "truce",
  "truce-slint",

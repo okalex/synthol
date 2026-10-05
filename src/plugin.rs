@@ -886,6 +886,26 @@ pub struct SynthParams {
     pub env_4_mod_4_amount: FloatParam,
     #[meter]
     pub env_4_level: MeterSlot,
+    /// Name of the loaded patch, saved with the host session. Empty means
+    /// the built-in "Default" patch; see `crate::patch`.
+    #[persist]
+    pub patch_name: std::sync::RwLock<String>,
+}
+
+impl SynthParams {
+    #[must_use]
+    pub fn patch_name(&self) -> String {
+        self.patch_name
+            .read()
+            .map(|name| name.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_patch_name(&self, name: &str) {
+        if let Ok(mut current) = self.patch_name.write() {
+            name.clone_into(&mut current);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

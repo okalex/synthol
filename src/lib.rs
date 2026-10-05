@@ -4,6 +4,7 @@ use truce::prelude::*;
 
 mod editor;
 pub mod engine;
+pub mod patch;
 pub mod plugin;
 
 pub use plugin::{Synth, SynthParams};

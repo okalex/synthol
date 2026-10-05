@@ -996,3 +996,16 @@ fn an_lfo_can_modulate_a_later_oscillator() {
     // A route to an inactive oscillator (Osc 3 Level) changes nothing.
     assert_eq!(render(8.0 / 11.0, 0.0), reference);
 }
+
+#[test]
+fn patch_name_persists_with_host_state() {
+    use truce::params::Params;
+    let params = crate::SynthParams::default();
+    assert_eq!(params.patch_name(), "");
+    params.set_patch_name("Warm Pad");
+    let saved = params.serialize_persist();
+
+    let restored = crate::SynthParams::default();
+    restored.load_persist(&saved);
+    assert_eq!(restored.patch_name(), "Warm Pad");
+}

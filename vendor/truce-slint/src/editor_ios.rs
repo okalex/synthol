@@ -98,6 +98,13 @@ impl<P: Params + 'static> SlintEditor<P> {
         }
     }
 
+    /// Synthol patch: API parity with the desktop editor. iOS has no
+    /// host computer-MIDI keyboard to protect, so this is a no-op.
+    #[must_use]
+    pub fn keyboard_capture(self, _capture: crate::KeyboardCapture) -> Self {
+        self
+    }
+
     /// Opt into host-driven resizing. When `true`, the AU v3 view
     /// controller fits the editor to the host plug-in pane's safe-area
     /// frame (driving `set_size` through the AU shim), so the editor
@@ -563,6 +570,7 @@ fn run_frame<P: Params + 'static>(inner: &mut Inner<P>) {
         phys_h,
         &mut inner.px_buf,
         &mut inner.rgba_buf,
+        false,
     );
 
     unsafe {

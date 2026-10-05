@@ -21,6 +21,7 @@ use truce_gui::EditorScale;
 use truce_params::Params;
 
 use crate::blit::BlitPipeline;
+use crate::keyboard::{KeyboardCapture, KeyboardCaptureMode};
 use crate::platform::{self, ParentWindow};
 
 /// Per-frame sync closure: takes the current `PluginContext` and updates the
@@ -129,6 +130,8 @@ pub struct SlintEditor<P: Params + ?Sized> {
     max_size: (u32, u32),
     aspect_ratio: Option<(u32, u32)>,
     prefers_pow2: bool,
+    /// Synthol patch: which keys are forwarded to Slint. See [`KeyboardCapture`].
+    keyboard_capture: KeyboardCapture,
 }
 
 /// Pack a `(width, height)` into a single `u64` for the
@@ -271,7 +274,17 @@ impl<P: Params + 'static> SlintEditor<P> {
             max_size: (u32::MAX, u32::MAX),
             aspect_ratio: None,
             prefers_pow2: false,
+            keyboard_capture: KeyboardCapture::new(),
         }
+    }
+
+    /// Share a [`KeyboardCapture`] handle so the plugin can decide at
+    /// runtime which keys the editor consumes. Without one, every key goes
+    /// back to the host.
+    #[must_use]
+    pub fn keyboard_capture(mut self, capture: KeyboardCapture) -> Self {
+        self.keyboard_capture = capture;
+        self
     }
 
     /// Opt out of host-driven resizing. Slint editors default to
@@ -404,6 +417,8 @@ struct SlintWindowHandler<P: Params + ?Sized> {
     max_size: (u32, u32),
     aspect_ratio: Option<(u32, u32)>,
     resize_corrector: ResizeCorrector,
+    /// Synthol patch: shared with the plugin; see [`KeyboardCapture`].
+    keyboard_capture: KeyboardCapture,
 }
 
 /// Wraps the live handler so a wgpu init failure at `open()` time
@@ -703,6 +718,9 @@ impl<P: Params + ?Sized + 'static> WindowHandler for SlintWindowHandler<P> {
             phys_h,
             &mut self.px_buf,
             &mut self.rgba_buf,
+            // An active capture mode means a modal overlay is open; see
+            // `render_to_rgba` for why overlays need full repaints.
+            self.keyboard_capture.get() != KeyboardCaptureMode::None,
         );
 
         // 5. Blit to screen
@@ -917,11 +935,39 @@ impl<P: Params + ?Sized + 'static> WindowHandler for SlintWindowHandler<P> {
                 }
                 EventStatus::Ignored
             }
-            // Synthol patch: the editor has no keyboard-driven widgets, so
-            // every key goes back to the host (baseview forwards `Ignored`
-            // events up the responder chain). Without this, clicking the
-            // editor swallows the DAW's computer-MIDI keyboard.
-            Event::Keyboard(_) => EventStatus::Ignored,
+            // Synthol patch: by default every key goes back to the host
+            // (baseview forwards `Ignored` events up the responder chain) so
+            // clicking the editor doesn't swallow the DAW's computer-MIDI
+            // keyboard. The plugin opts into Escape-only or full capture
+            // while a dialog needs keys.
+            Event::Keyboard(kb) => {
+                let forward = match self.keyboard_capture.get() {
+                    KeyboardCaptureMode::None => false,
+                    KeyboardCaptureMode::Escape => {
+                        matches!(kb.key, keyboard_types::Key::Escape)
+                    }
+                    KeyboardCaptureMode::All => true,
+                };
+                if !forward {
+                    return EventStatus::Ignored;
+                }
+                let Some(text) = slint_key_text(&kb.key) else {
+                    return EventStatus::Ignored;
+                };
+                let window = self.slint_window.window();
+                match kb.state {
+                    keyboard_types::KeyState::Down if kb.repeat => {
+                        window.dispatch_event(WindowEvent::KeyPressRepeated { text });
+                    }
+                    keyboard_types::KeyState::Down => {
+                        window.dispatch_event(WindowEvent::KeyPressed { text });
+                    }
+                    keyboard_types::KeyState::Up => {
+                        window.dispatch_event(WindowEvent::KeyReleased { text });
+                    }
+                }
+                EventStatus::Captured
+            }
         }
     }
 }
@@ -938,6 +984,53 @@ fn convert_mouse_button(button: baseview::MouseButton) -> Option<PointerEventBut
         baseview::MouseButton::Forward => Some(PointerEventButton::Forward),
         baseview::MouseButton::Other(_) => None,
     }
+}
+
+/// Translate a baseview logical key into the text Slint's `WindowEvent`
+/// keyboard events carry: printable keys use their character(s); named keys
+/// map to the private-use chars from `slint::platform::Key`. Keys Slint
+/// doesn't model return `None` and are dropped.
+fn slint_key_text(key: &keyboard_types::Key) -> Option<slint::SharedString> {
+    use keyboard_types::Key as K;
+    use slint::platform::Key as SK;
+    let named = match key {
+        K::Character(s) => return Some(s.as_str().into()),
+        K::Enter => SK::Return,
+        K::Tab => SK::Tab,
+        K::Backspace => SK::Backspace,
+        K::Escape => SK::Escape,
+        K::Delete => SK::Delete,
+        K::ArrowUp => SK::UpArrow,
+        K::ArrowDown => SK::DownArrow,
+        K::ArrowLeft => SK::LeftArrow,
+        K::ArrowRight => SK::RightArrow,
+        K::Home => SK::Home,
+        K::End => SK::End,
+        K::PageUp => SK::PageUp,
+        K::PageDown => SK::PageDown,
+        K::Insert => SK::Insert,
+        K::ContextMenu => SK::Menu,
+        K::Shift => SK::Shift,
+        K::Control => SK::Control,
+        K::Alt => SK::Alt,
+        K::AltGraph => SK::AltGr,
+        K::Meta => SK::Meta,
+        K::CapsLock => SK::CapsLock,
+        K::F1 => SK::F1,
+        K::F2 => SK::F2,
+        K::F3 => SK::F3,
+        K::F4 => SK::F4,
+        K::F5 => SK::F5,
+        K::F6 => SK::F6,
+        K::F7 => SK::F7,
+        K::F8 => SK::F8,
+        K::F9 => SK::F9,
+        K::F10 => SK::F10,
+        K::F11 => SK::F11,
+        K::F12 => SK::F12,
+        _ => return None,
+    };
+    Some(named.into())
 }
 
 // Editor trait
@@ -988,6 +1081,7 @@ impl<P: Params + 'static> Editor for SlintEditor<P> {
         let typed_ctx = context.with_params(self.params.clone());
         let setup = Arc::clone(&self.setup);
         let scale_handle = self.scale.clone();
+        let keyboard_capture = self.keyboard_capture.clone();
 
         // --- baseview + wgpu ---
         let options = WindowOpenOptions {
@@ -1079,6 +1173,7 @@ impl<P: Params + 'static> Editor for SlintEditor<P> {
                     max_size,
                     aspect_ratio,
                     resize_corrector: ResizeCorrector::default(),
+                    keyboard_capture,
                 }))
             })
         }));

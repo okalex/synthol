@@ -32,6 +32,7 @@
 pub mod blit;
 #[cfg(not(target_os = "ios"))]
 pub mod editor;
+pub mod keyboard;
 pub mod platform;
 #[cfg(not(target_os = "ios"))]
 mod screenshot;
@@ -47,6 +48,7 @@ pub use editor_ios::{SlintEditor, SyncFn};
 
 // Re-export `PluginContext` so plugin authors using the `bind!` macro
 // don't need a direct truce-core dependency.
+pub use keyboard::{KeyboardCapture, KeyboardCaptureMode};
 pub use truce_core::editor::PluginContext;
 
 // Re-export slint so plugin authors can use it without a direct dependency.

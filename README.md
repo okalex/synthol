@@ -149,12 +149,37 @@ provides a reusable ADSR graph/knob panel for envelope modulators,
 an output-gain slider, a voice-count dropdown, and the oscillator, filter, and
 modulator controls. Attack, decay, and release each range from 0 ms to 10 s
 on a skewed taper that gives short times more of the knob. The controls use
-Slint's software renderer and are drag-only. The editor passes every keyboard
-event back to the host, so Ableton's computer MIDI keyboard remains available
-after clicking the editor. This relies on a patched copy of `truce-slint` in
+Slint's software renderer and are drag-only. The editor passes keyboard
+events back to the host, so Ableton's computer MIDI keyboard remains available
+after clicking the editor. The exceptions are the patch dialogs: while the patch
+browser is open only Esc is captured, and while the save dialog is open every
+key goes to its name field. This relies on a patched copy of `truce-slint` in
 [`vendor/truce-slint`](vendor/truce-slint) (wired up via `[patch.crates-io]`
 in `Cargo.toml`); upstream truce-slint captures all keys once the editor has
-focus. Re-apply the patch when upgrading Truce.
+focus. The patched copy adds a switchable `KeyboardCapture` handle and repaints
+whole frames while a dialog is open. Slint 1.15's partial repaints otherwise
+draw waveform paths over the translucent dialog backdrops. Re-apply the patch
+when upgrading Truce.
+
+### Patches
+
+The title bar shows the loaded patch's name, followed by ` *` once a control
+changes. **‹ / ›** step through the patch list (wrapping around). The name or
+its **▾** opens the patch browser. Clicking a patch loads it and leaves the
+browser open so you can audition several; close it with **×**, Esc, or a click
+outside it. The trash icon deletes a saved patch after a confirmation. The
+built-in **Default** entry at the top resets every parameter. The disk icon
+opens the save dialog. Saving under an existing name (case-insensitive) asks
+before overwriting. "Default" is reserved.
+
+Patches are stored one per file in
+`~/Library/Application Support/Synthol/Patches/<name>.synthol`. Each file is
+JSON (`"format": "synthol-patch"`, `"version": 1`) and records every
+non-read-only host parameter by stable ID as a plain value. Loading a patch
+resets parameters missing from the file to their defaults, ignores unknown
+IDs, and rejects files from a newer format version. Loads go through host
+automation, so the DAW sees them as parameter changes. The loaded patch's name
+is saved with the host session.
 
 ## Build
 

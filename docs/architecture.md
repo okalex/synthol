@@ -40,8 +40,9 @@ one more shared, free-running LFO for Sync mode; `engine/modulation.rs` routes
 them to destinations. See "MIDI, notes, voices, and
 modulation" below. This fixed graph is an internal
 representation only: it is not user-editable or serialized, and graph
-publication, patch persistence, additional node types, and a patching UI are
-future work. This keeps the current instrument's behavior unchanged while
+publication, graph-document persistence, additional node types, and a
+patching UI are future work. Sound patches are currently flat host-parameter
+snapshots (see "Persistence and compatibility"). This keeps the current instrument's behavior unchanged while
 establishing the boundaries for later stages.
 
 ## High-level structure
@@ -328,6 +329,16 @@ memory. Include a document format version, node IDs, node kind/version,
 settings, connections, and relevant global engine settings. On load, migrate
 older document versions explicitly and surface unknown nodes or invalid
 connections as recoverable diagnostics; do not silently discard user work.
+
+Until the graph document exists, `src/patch.rs` saves user patches as
+versioned JSON snapshots of the non-read-only host parameters, keyed by stable
+param ID and stored as plain values. Missing IDs load as defaults and unknown
+IDs are ignored. Files use the `.synthol` extension and live in
+`~/Library/Application Support/Synthol/Patches`. `src/editor/patches.rs` owns
+the browser/save UI state and applies loads through host automation. The
+loaded patch name is a `#[persist]` field so it survives session reloads.
+When the graph document lands, bump the patch format version and migrate
+version-1 parameter snapshots explicitly.
 
 Keep DSP state persistence distinct from patch serialization. Depending on
 host behavior, a plugin state blob may include both the graph document and

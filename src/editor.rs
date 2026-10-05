@@ -6,7 +6,11 @@ use std::sync::Arc;
 use slint::Model;
 
 use truce::prelude::*;
-use truce_slint::{PluginContext, SlintEditor, SyncFn};
+use truce_slint::{KeyboardCapture, PluginContext, SlintEditor, SyncFn};
+
+mod patches;
+
+use self::patches::PatchController;
 
 use crate::engine::modulation::MAX_PITCH_SEMITONES;
 use crate::engine::node::filter::{BiquadCoefficients, MAX_CUTOFF_HZ, MIN_CUTOFF_HZ};
@@ -17,6 +21,7 @@ use crate::engine::{
     FilterMode, FilterSettings, MAX_ENVELOPES, MAX_LFOS, MAX_OSCILLATORS, MAX_VOICES, MOD_SLOTS,
     ModDestination, ModRoute, Waveform,
 };
+use crate::patch::PatchLibrary;
 use crate::plugin::{
     ENV_PARAMS, FilterType, LFO_PARAMS, LfoModeType, LfoShapeType, ModDestinationType,
     OSCILLATOR_PARAMS, OscillatorType, SynthParams, SynthParamsParamId, decode_lfo_newest,
@@ -28,18 +33,34 @@ slint::include_modules!();
 const EDITOR_SIZE: (u32, u32) = (1100, 1100);
 
 pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
+    let keyboard = KeyboardCapture::new();
+    let keyboard_for_setup = keyboard.clone();
     SlintEditor::new(
         params,
         EDITOR_SIZE,
-        |state: PluginContext<SynthParams>| -> SyncFn<SynthParams> {
+        move |state: PluginContext<SynthParams>| -> SyncFn<SynthParams> {
             let ui = SynthUi::new().expect("failed to create Slint editor");
-            setup_editor(state, ui)
+            setup_editor_with(state, ui, PatchLibrary::user(), keyboard_for_setup.clone())
         },
     )
+    .keyboard_capture(keyboard)
     .into_editor()
 }
 
+#[cfg(test)]
 fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthParams> {
+    let library = PatchLibrary::new(std::env::temp_dir().join("synthol-editor-tests-unused"));
+    setup_editor_with(state, ui, library, KeyboardCapture::new())
+}
+
+fn setup_editor_with(
+    state: PluginContext<SynthParams>,
+    ui: SynthUi,
+    library: PatchLibrary,
+    keyboard: KeyboardCapture,
+) -> SyncFn<SynthParams> {
+    let patch_controller = Rc::new(RefCell::new(PatchController::new(library)));
+    patches::wire(&ui, &state, &patch_controller);
     let pending_edits = Rc::new(RefCell::new(Vec::<(SynthParamsParamId, f64)>::new()));
     let selected_envelope = {
         let ui = ui.as_weak();
@@ -486,6 +507,7 @@ fn setup_editor(state: PluginContext<SynthParams>, ui: SynthUi) -> SyncFn<SynthP
         for (id, value) in pending_edits.borrow_mut().drain(..) {
             state.automate(id, value);
         }
+        patches::sync(&ui, state, &patch_controller, &keyboard);
 
         ui.set_gain(state.get_param(SynthParamsParamId::Volume));
         ui.set_gain_text(slint::SharedString::from(
@@ -2178,5 +2200,389 @@ mod tests {
         assert!(points[0].1.abs() < 0.01);
         assert!(points[CYCLE_PATH_SEGMENTS / 2].1 - 50.0 < 0.01);
         assert!(points[CYCLE_PATH_SEGMENTS].1.abs() < 0.01);
+    }
+
+    struct PatchHarness {
+        window: std::rc::Rc<slint::platform::software_renderer::MinimalSoftwareWindow>,
+        ui: SynthUi,
+        params: Arc<SynthParams>,
+        state: PluginContext<SynthParams>,
+        sync: SyncFn<SynthParams>,
+        keyboard: KeyboardCapture,
+        automated: Arc<std::sync::Mutex<Vec<u32>>>,
+        _dir: crate::patch::tests::TempDir,
+    }
+
+    impl PatchHarness {
+        fn new() -> Self {
+            use slint::ComponentHandle;
+            use truce_slint::truce_core::editor::ClosureBridge;
+
+            truce_slint::platform::ensure_platform();
+            let window = truce_slint::platform::create_slint_window();
+            window.set_size(slint::PhysicalSize::new(EDITOR_SIZE.0, EDITOR_SIZE.1));
+            let ui = SynthUi::new().unwrap();
+            let params = Arc::new(SynthParams::default());
+            let automated = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (set_params, get_params, plain_params, format_params) = (
+                params.clone(),
+                params.clone(),
+                params.clone(),
+                params.clone(),
+            );
+            let log = automated.clone();
+            let bridge = ClosureBridge {
+                begin_edit: Box::new(|_| {}),
+                set_param: Box::new(move |id, value| {
+                    log.lock().unwrap().push(id);
+                    set_params.set_normalized(id, value);
+                }),
+                end_edit: Box::new(|_| {}),
+                request_resize: Box::new(|_, _| false),
+                get_param: Box::new(move |id| get_params.get_normalized(id).unwrap()),
+                get_param_plain: Box::new(move |id| plain_params.get_plain(id).unwrap()),
+                format_param: Box::new(move |id| {
+                    format_params
+                        .format_value(id, format_params.get_plain(id).unwrap())
+                        .unwrap()
+                }),
+                get_meter: Box::new(|_| 0.0),
+                get_state: Box::new(Vec::new),
+                set_state: Box::new(|_| panic!("unexpected custom-state edit")),
+                transport: Box::new(|| None),
+            };
+            let state = PluginContext::new(Arc::new(bridge), params.clone());
+            let dir = crate::patch::tests::TempDir::new("editor-patches");
+            let keyboard = KeyboardCapture::new();
+            let sync = setup_editor_with(
+                state.clone(),
+                ui.clone_strong(),
+                PatchLibrary::new(&dir.0),
+                keyboard.clone(),
+            );
+            ui.show().unwrap();
+            let harness = Self {
+                window,
+                ui,
+                params,
+                state,
+                sync,
+                keyboard,
+                automated,
+                _dir: dir,
+            };
+            harness.frame();
+            harness
+        }
+
+        /// One editor frame: sync then render, which also instantiates
+        /// conditional elements such as the dialogs.
+        fn frame(&self) {
+            use slint::platform::software_renderer::PremultipliedRgbaColor;
+            (self.sync)(&self.state);
+            let (width, height) = (EDITOR_SIZE.0 as usize, EDITOR_SIZE.1 as usize);
+            let mut pixels = vec![PremultipliedRgbaColor::default(); width * height];
+            self.window.request_redraw();
+            self.window.draw_if_needed(|renderer| {
+                renderer.render(&mut pixels, width);
+            });
+            (self.sync)(&self.state);
+        }
+
+        fn key(&self, text: impl Into<slint::SharedString>) {
+            use slint::ComponentHandle;
+            use slint::platform::WindowEvent;
+            let text = text.into();
+            self.ui
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            self.ui
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased { text });
+        }
+
+        fn type_text(&self, text: &str) {
+            for c in text.chars() {
+                self.key(c.to_string());
+            }
+        }
+
+        fn set(&self, id: SynthParamsParamId, normalized: f64) {
+            self.params.set_normalized(id.into(), normalized);
+        }
+
+        fn get(&self, id: SynthParamsParamId) -> f64 {
+            self.params.get_normalized(id.into()).unwrap()
+        }
+
+        fn patches(&self) -> Vec<String> {
+            self.ui
+                .get_patches()
+                .iter()
+                .map(|name| name.to_string())
+                .collect()
+        }
+
+        fn save_via_dialog(&self, name: &str) {
+            self.ui.invoke_patch_save_requested();
+            self.frame();
+            self.ui.set_save_name(name.into());
+            self.ui.invoke_patch_saved(name.into(), false);
+            self.frame();
+        }
+    }
+
+    #[test]
+    fn patch_title_shows_default_and_tracks_modifications() {
+        let h = PatchHarness::new();
+        assert_eq!(h.ui.get_patch_name(), "Default");
+        assert!(!h.ui.get_patch_modified());
+        assert_eq!(h.keyboard.get(), truce_slint::KeyboardCaptureMode::None);
+
+        h.set(SynthParamsParamId::FilterCutoff, 0.2);
+        h.frame();
+        assert!(h.ui.get_patch_modified());
+
+        h.save_via_dialog("Dark");
+        assert!(!h.ui.get_save_dialog_open());
+        assert_eq!(h.ui.get_patch_name(), "Dark");
+        assert!(!h.ui.get_patch_modified());
+        assert_eq!(h.params.patch_name(), "Dark");
+
+        h.set(SynthParamsParamId::FilterQ, 0.9);
+        h.frame();
+        assert!(h.ui.get_patch_modified());
+    }
+
+    #[test]
+    fn patch_browser_loads_without_closing_and_escape_closes_it() {
+        let h = PatchHarness::new();
+        h.set(SynthParamsParamId::FilterCutoff, 0.2);
+        h.set(SynthParamsParamId::OscCount, 1.0);
+        h.save_via_dialog("Bright");
+        let default_cutoff = {
+            let fresh = SynthParams::default();
+            fresh
+                .get_normalized(SynthParamsParamId::FilterCutoff.into())
+                .unwrap()
+        };
+
+        h.ui.invoke_patch_browser_toggled();
+        h.frame();
+        assert!(h.ui.get_patch_browser_open());
+        assert_eq!(h.patches(), ["Default", "Bright"]);
+        assert_eq!(h.ui.get_current_patch(), 1);
+        assert_eq!(h.keyboard.get(), truce_slint::KeyboardCaptureMode::Escape);
+
+        h.automated.lock().unwrap().clear();
+        h.ui.invoke_patch_selected(0);
+        h.frame();
+        assert!(
+            h.ui.get_patch_browser_open(),
+            "loading keeps the browser open"
+        );
+        assert_eq!(h.ui.get_patch_name(), "Default");
+        assert_eq!(h.ui.get_current_patch(), 0);
+        assert!(!h.ui.get_patch_modified());
+        assert!((h.get(SynthParamsParamId::FilterCutoff) - default_cutoff).abs() < 1e-9);
+        assert_eq!(h.params.osc_count.value_usize(), 1);
+        let automated = h.automated.lock().unwrap().clone();
+        assert!(automated.contains(&SynthParamsParamId::FilterCutoff.into()));
+        assert!(automated.contains(&SynthParamsParamId::OscCount.into()));
+        assert!(
+            !automated.contains(&SynthParamsParamId::Volume.into()),
+            "unchanged params are left alone"
+        );
+
+        h.ui.invoke_patch_selected(1);
+        h.frame();
+        assert!(h.ui.get_patch_browser_open());
+        assert!((h.get(SynthParamsParamId::FilterCutoff) - 0.2).abs() < 1e-6);
+        assert_eq!(h.params.osc_count.value_usize(), MAX_OSCILLATORS);
+
+        // Non-Escape keys are left alone (they go to the host in the plugin).
+        h.key("a");
+        h.frame();
+        assert!(h.ui.get_patch_browser_open());
+        h.key(slint::platform::Key::Escape);
+        h.frame();
+        assert!(!h.ui.get_patch_browser_open());
+        assert_eq!(h.keyboard.get(), truce_slint::KeyboardCaptureMode::None);
+
+        // The title-bar name toggles the browser.
+        h.ui.invoke_patch_browser_toggled();
+        h.ui.invoke_patch_browser_toggled();
+        assert!(!h.ui.get_patch_browser_open());
+    }
+
+    #[test]
+    fn save_dialog_accepts_typing_and_confirms_overwrites() {
+        let h = PatchHarness::new();
+        h.ui.invoke_patch_save_requested();
+        h.frame();
+        assert!(h.ui.get_save_dialog_open());
+        assert_eq!(h.ui.get_save_name(), "", "Default isn't offered as a name");
+        assert_eq!(h.keyboard.get(), truce_slint::KeyboardCaptureMode::All);
+
+        h.type_text("Lead 1");
+        assert_eq!(h.ui.get_save_name(), "Lead 1");
+        h.key(slint::platform::Key::Return);
+        h.frame();
+        assert!(!h.ui.get_save_dialog_open());
+        assert_eq!(h.ui.get_patch_name(), "Lead 1");
+
+        // Saving again under the same name (any case) asks first.
+        h.set(SynthParamsParamId::FilterQ, 0.8);
+        h.ui.invoke_patch_save_requested();
+        h.frame();
+        assert_eq!(h.ui.get_save_name(), "Lead 1");
+        for _ in 0.."Lead 1".len() {
+            h.key(slint::platform::Key::Backspace);
+        }
+        h.type_text("LEAD 1");
+        h.key(slint::platform::Key::Return);
+        h.frame();
+        assert!(h.ui.get_save_dialog_open());
+        assert!(h.ui.get_save_confirm_overwrite());
+        assert_eq!(h.ui.get_save_existing_name(), "Lead 1");
+
+        // Editing the name clears the confirmation.
+        h.type_text("x");
+        assert!(!h.ui.get_save_confirm_overwrite());
+        h.key(slint::platform::Key::Backspace);
+        h.key(slint::platform::Key::Return);
+        h.frame();
+        assert!(h.ui.get_save_confirm_overwrite());
+        h.key(slint::platform::Key::Return);
+        h.frame();
+        assert!(!h.ui.get_save_dialog_open());
+        assert_eq!(h.ui.get_patch_name(), "LEAD 1");
+        h.ui.invoke_patch_browser_toggled();
+        assert_eq!(h.patches(), ["Default", "LEAD 1"]);
+
+        // Invalid names show an error and keep the dialog open.
+        h.ui.invoke_patch_save_requested();
+        h.frame();
+        h.ui.invoke_patch_saved("a/b".into(), false);
+        assert!(h.ui.get_save_dialog_open());
+        assert_ne!(h.ui.get_save_error(), "");
+        h.key(slint::platform::Key::Escape);
+        h.frame();
+        assert!(!h.ui.get_save_dialog_open());
+        assert!(
+            h.ui.get_patch_browser_open(),
+            "cancelling the save keeps the browser"
+        );
+        assert_eq!(h.keyboard.get(), truce_slint::KeyboardCaptureMode::Escape);
+        h.key(slint::platform::Key::Escape);
+        h.frame();
+        assert!(
+            !h.ui.get_patch_browser_open(),
+            "Escape works again after the dialog"
+        );
+    }
+
+    #[test]
+    fn patch_arrows_step_with_wraparound_and_delete_removes_entries() {
+        let h = PatchHarness::new();
+        for (name, cutoff) in [("B", 0.3), ("a", 0.2), ("c", 0.4)] {
+            h.set(SynthParamsParamId::FilterCutoff, cutoff);
+            h.save_via_dialog(name);
+        }
+        h.ui.invoke_patch_selected(0);
+        h.ui.invoke_patch_browser_toggled();
+        h.frame();
+        assert_eq!(h.patches(), ["Default", "a", "B", "c"]);
+
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            h.ui.invoke_patch_next();
+            h.frame();
+            seen.push(h.ui.get_patch_name().to_string());
+        }
+        assert_eq!(seen, ["a", "B", "c", "Default"]);
+        h.ui.invoke_patch_previous();
+        h.frame();
+        assert_eq!(h.ui.get_patch_name(), "c");
+        assert!((h.get(SynthParamsParamId::FilterCutoff) - 0.4).abs() < 1e-6);
+
+        h.ui.invoke_patch_deleted(2);
+        h.frame();
+        assert_eq!(h.patches(), ["Default", "a", "c"]);
+        // Deleting the loaded patch keeps its name and sound.
+        h.ui.invoke_patch_deleted(2);
+        h.frame();
+        assert_eq!(h.patches(), ["Default", "a"]);
+        assert_eq!(h.ui.get_patch_name(), "c");
+        assert_eq!(h.ui.get_current_patch(), -1);
+        assert!(!h.ui.get_patch_modified());
+        // The Default entry can't be deleted.
+        h.ui.invoke_patch_deleted(0);
+        assert_eq!(h.patches(), ["Default", "a"]);
+        h.ui.invoke_patch_next();
+        h.frame();
+        assert_eq!(h.ui.get_patch_name(), "Default");
+    }
+
+    #[test]
+    fn restored_session_patch_name_is_shown_unmodified() {
+        let h = PatchHarness::new();
+        h.set(SynthParamsParamId::FilterCutoff, 0.35);
+        h.save_via_dialog("Session");
+        h.ui.invoke_patch_selected(0);
+        h.frame();
+
+        // As if the host restored a session that had "Session" loaded.
+        h.set(SynthParamsParamId::FilterCutoff, 0.35);
+        h.params.set_patch_name("Session");
+        h.frame();
+        assert_eq!(h.ui.get_patch_name(), "Session");
+        assert!(!h.ui.get_patch_modified());
+    }
+
+    /// Slint 1.15's software renderer draws dirty paths outside the dirty
+    /// region, so partial repaints let the waveform bleed through the
+    /// translucent dialog backdrops. The editor repaints whole frames while
+    /// a dialog captures the keyboard.
+    #[test]
+    fn patch_dialogs_stay_opaque_over_redrawn_paths() {
+        use slint::platform::software_renderer::PremultipliedRgbaColor;
+
+        let h = PatchHarness::new();
+        let (width, height) = EDITOR_SIZE;
+        let mut pixels = Vec::<PremultipliedRgbaColor>::new();
+        let mut rgba = Vec::new();
+        h.window.set_size(slint::PhysicalSize::new(1, 1));
+        h.window.set_size(slint::PhysicalSize::new(width, height));
+        // Bright waveform-stroke pixels in the oscillator display.
+        let mut bright_waveform = || {
+            (h.sync)(&h.state);
+            h.window.request_redraw();
+            truce_slint::platform::render_to_rgba(
+                &h.window,
+                width,
+                height,
+                &mut pixels,
+                &mut rgba,
+                h.keyboard.get() != truce_slint::KeyboardCaptureMode::None,
+            );
+            (190..330)
+                .flat_map(|y| (30..330).map(move |x| y * width as usize + x))
+                .filter(|&i| pixels[i].blue > 200 && pixels[i].red < 120)
+                .count()
+        };
+
+        assert!(bright_waveform() > 100);
+        h.ui.invoke_patch_save_requested();
+        assert_eq!(bright_waveform(), 0);
+        h.ui.set_save_error("error".into());
+        assert_eq!(bright_waveform(), 0);
+        h.ui.set_save_confirm_overwrite(true);
+        assert_eq!(bright_waveform(), 0);
+        h.ui.invoke_patch_browser_toggled();
+        h.key(slint::platform::Key::Escape);
+        assert_eq!(bright_waveform(), 0, "the browser is still open");
+        h.key(slint::platform::Key::Escape);
+        assert!(bright_waveform() > 100);
     }
 }

@@ -160,6 +160,11 @@ const fn build_unpremul_lut() -> [u32; 256] {
 ///
 /// Uses `PremultipliedRgbaColor` as the native pixel type. The returned
 /// buffer is reused across frames, sized to `width * height * 4`.
+///
+/// Synthol patch: `full_repaint` redraws the whole frame instead of only
+/// the dirty region. Slint 1.15's software renderer draws a dirty `Path`
+/// in full rather than clipped to the dirty region, so paths bleed
+/// through translucent overlays drawn above them during partial repaints.
 // `(u32::from(channel) * inv_a) >> 16` is bounded in `[0, 255]` by the
 // LUT shape; the `as u8` truncations are lossless.
 #[allow(clippy::cast_possible_truncation)]
@@ -169,11 +174,17 @@ pub fn render_to_rgba(
     height: u32,
     px_buf: &mut Vec<PremultipliedRgbaColor>,
     rgba_buf: &mut Vec<u8>,
+    full_repaint: bool,
 ) {
     let pixel_count = (width * height) as usize;
     px_buf.resize(pixel_count, PremultipliedRgbaColor::default());
 
     window.draw_if_needed(|renderer| {
+        renderer.set_repaint_buffer_type(if full_repaint {
+            RepaintBufferType::NewBuffer
+        } else {
+            RepaintBufferType::ReusedBuffer
+        });
         renderer.render(px_buf, width as usize);
     });
 

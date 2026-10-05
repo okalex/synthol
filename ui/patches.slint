@@ -1,0 +1,442 @@
+// Patch selector (title bar), patch browser and save dialog.
+//
+// Only the browser and save dialog use FocusScope/TextInput; editor.rs tells
+// the plugin window to forward just Escape while the browser is open (so the
+// host's computer-MIDI keyboard keeps working) and every key while the save
+// dialog is open.
+
+import { TextButton } from "controls.slint";
+
+// 16x16 stroked icons for IconButton.
+export global PatchIcons {
+    out property <string> previous: "M 10 3 L 5 8 L 10 13";
+    out property <string> next: "M 6 3 L 11 8 L 6 13";
+    out property <string> chevron-down: "M 4 6 L 8 10 L 12 6";
+    out property <string> close: "M 4 4 L 12 12 M 12 4 L 4 12";
+    out property <string> save: "M 2.5 2.5 L 11.5 2.5 L 13.5 4.5 L 13.5 13.5 L 2.5 13.5 Z M 5 2.5 L 5 6 L 10.5 6 L 10.5 2.5 M 4.5 13.5 L 4.5 9.5 L 11.5 9.5 L 11.5 13.5";
+    out property <string> trash: "M 2.5 4 L 13.5 4 M 6 4 L 6 2.5 L 10 2.5 L 10 4 M 4 4 L 5 13.5 L 11 13.5 L 12 4 M 7 6.5 L 7 11 M 9 6.5 L 9 11";
+}
+
+export component IconButton inherits Rectangle {
+    in property <string> icon;
+    // Flat buttons have no fill or border until hovered.
+    in property <bool> flat;
+    in property <brush> icon-color: #c6cad4;
+    in property <brush> hover-color: #e8eaf0;
+    out property <bool> has-hover: touch.has-hover;
+    callback clicked();
+
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    background: touch.pressed ? #343943 : touch.has-hover ? #2f343e : root.flat ? transparent : #292d36;
+    border-width: root.flat ? 0px : 1px;
+    border-color: #424754;
+
+    Path {
+        x: (parent.width - 16px) / 2;
+        y: (parent.height - 16px) / 2;
+        width: 16px;
+        height: 16px;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: root.icon;
+        fill: transparent;
+        stroke: touch.has-hover ? root.hover-color : root.icon-color;
+        stroke-width: 1.5px;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// `‹ [Name * ▾] › [disk]` in the title bar.
+export component PatchSelector inherits HorizontalLayout {
+    in property <string> name;
+    in property <bool> modified;
+    in property <bool> browser-open;
+    callback previous();
+    callback next();
+    callback browse();
+    callback save();
+
+    spacing: 4px;
+    alignment: center;
+
+    IconButton {
+        icon: PatchIcons.previous;
+        clicked => { root.previous(); }
+    }
+
+    Rectangle {
+        width: 220px;
+        height: 28px;
+        border-radius: 4px;
+        background: name-touch.pressed ? #343943 : name-touch.has-hover ? #2f343e : #292d36;
+        border-width: 1px;
+        border-color: root.browser-open ? #4d99f2 : #424754;
+
+        Text {
+            x: 10px;
+            width: parent.width - 36px;
+            text: root.name + (root.modified ? " *" : "");
+            font-size: 12px;
+            font-weight: 700;
+            color: #e8eaf0;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+
+        Path {
+            x: parent.width - 24px;
+            y: (parent.height - 16px) / 2;
+            width: 16px;
+            height: 16px;
+            viewbox-width: 16;
+            viewbox-height: 16;
+            commands: PatchIcons.chevron-down;
+            fill: transparent;
+            stroke: root.browser-open || name-touch.has-hover ? #e8eaf0 : #9299a8;
+            stroke-width: 1.5px;
+        }
+
+        name-touch := TouchArea {
+            clicked => { root.browse(); }
+        }
+    }
+
+    IconButton {
+        icon: PatchIcons.next;
+        clicked => { root.next(); }
+    }
+
+    Rectangle {
+        width: 4px;
+    }
+
+    IconButton {
+        icon: PatchIcons.save;
+        clicked => { root.save(); }
+    }
+}
+
+// Lists "Default" (index 0) and the saved patches. Selecting a row loads it
+// and keeps the browser open; the X, Escape or a click outside the panel
+// closes it.
+export component PatchBrowser inherits Rectangle {
+    in property <[string]> patches;
+    in property <int> current: -1;
+    in property <string> error;
+    // While another dialog holds keyboard focus; focus returns here after.
+    in property <bool> dialog-open;
+    callback select(int);
+    callback delete(int);
+    callback close();
+
+    property <int> confirm-delete: -1;
+    property <length> row-height: 34px;
+    property <length> header-height: 48px;
+    property <length> footer-height: root.patches.length <= 1 || root.error != "" ? 44px : 8px;
+
+    background: #0b0c10a8;
+
+    init => { keys.focus(); }
+    changed dialog-open => {
+        if !self.dialog-open {
+            keys.focus();
+        }
+    }
+
+    TouchArea {
+        clicked => { root.close(); }
+    }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.close();
+                return accept;
+            }
+            reject
+        }
+
+        panel := Rectangle {
+            x: (root.width - self.width) / 2;
+            y: 16px;
+            width: 460px;
+            height: min(root.height - 32px, root.header-height + root.patches.length * root.row-height + root.footer-height);
+            border-radius: 8px;
+            background: #20232b;
+            border-width: 1px;
+            border-color: #424754;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #00000080;
+            clip: true;
+
+            // Keeps clicks on the panel from reaching the backdrop.
+            TouchArea {
+                clicked => { keys.focus(); }
+            }
+
+            Text {
+                x: 16px;
+                y: 0px;
+                height: root.header-height;
+                text: "PATCHES";
+                font-size: 11px;
+                font-weight: 700;
+                color: #9299a8;
+                vertical-alignment: center;
+            }
+
+            IconButton {
+                x: parent.width - self.width - 10px;
+                y: (root.header-height - self.height) / 2;
+                flat: true;
+                icon: PatchIcons.close;
+                clicked => { root.close(); }
+            }
+
+            Rectangle {
+                y: root.header-height - 1px;
+                height: 1px;
+                background: #424754;
+            }
+
+            list := Flickable {
+                y: root.header-height;
+                height: parent.height - root.header-height - root.footer-height;
+                viewport-height: root.patches.length * root.row-height;
+                interactive: false;
+
+                for name[index] in root.patches: Rectangle {
+                    y: index * root.row-height;
+                    height: root.row-height;
+                    background: index == root.current ? #29354a : row-touch.has-hover ? #292d36 : transparent;
+
+                    row-touch := TouchArea {
+                        clicked => {
+                            root.confirm-delete = -1;
+                            keys.focus();
+                            root.select(index);
+                        }
+                    }
+
+                    Rectangle {
+                        x: 0px;
+                        width: 3px;
+                        background: index == root.current ? #4d99f2 : transparent;
+                    }
+
+                    Text {
+                        x: 16px;
+                        width: parent.width - (root.confirm-delete == index ? 210px : 60px);
+                        text: name;
+                        font-size: 12px;
+                        font-weight: index == root.current ? 700 : 400;
+                        color: index == root.current ? #e8eaf0 : #c6cad4;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+
+                    if index > 0 && root.confirm-delete != index: IconButton {
+                        x: parent.width - self.width - 10px;
+                        y: (parent.height - self.height) / 2;
+                        flat: true;
+                        icon: PatchIcons.trash;
+                        icon-color: row-touch.has-hover || self.has-hover ? #9299a8 : #5c6372;
+                        hover-color: #f26d6d;
+                        clicked => {
+                            root.confirm-delete = index;
+                            keys.focus();
+                        }
+                    }
+
+                    if root.confirm-delete == index: HorizontalLayout {
+                        x: parent.width - self.width - 10px;
+                        y: (parent.height - 22px) / 2;
+                        width: self.preferred-width;
+                        height: 22px;
+                        spacing: 6px;
+
+                        Text {
+                            text: "Delete?";
+                            font-size: 10px;
+                            color: #f26d6d;
+                            vertical-alignment: center;
+                        }
+
+                        TextButton {
+                            text: "DELETE";
+                            clicked => {
+                                root.confirm-delete = -1;
+                                keys.focus();
+                                root.delete(index);
+                            }
+                        }
+
+                        TextButton {
+                            text: "CANCEL";
+                            clicked => {
+                                root.confirm-delete = -1;
+                                keys.focus();
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.error != "" || root.patches.length <= 1: Text {
+                x: 16px;
+                y: parent.height - root.footer-height;
+                width: parent.width - 32px;
+                height: root.footer-height;
+                text: root.error != "" ? root.error : "No saved patches yet. Use the disk button to save one.";
+                font-size: 11px;
+                color: root.error != "" ? #f26d6d : #7c8394;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// Names and saves the current sound. Enter saves, Escape or the X cancels.
+// Saving over an existing patch asks for confirmation first.
+export component SaveDialog inherits Rectangle {
+    in-out property <string> name;
+    in property <string> error;
+    in property <bool> confirm-overwrite;
+    in property <string> existing-name;
+    callback save(string, bool);
+    callback cancel();
+    callback edited();
+
+    background: #0b0c10b8;
+
+    // Modal: swallow clicks outside the panel.
+    TouchArea { }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            reject
+        }
+
+        Rectangle {
+            x: (root.width - self.width) / 2;
+            y: 120px;
+            width: 400px;
+            height: 196px;
+            border-radius: 8px;
+            background: #20232b;
+            border-width: 1px;
+            border-color: #424754;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #00000080;
+
+            TouchArea {
+                clicked => { input.focus(); }
+            }
+
+            Text {
+                x: 16px;
+                y: 0px;
+                height: 48px;
+                text: "SAVE PATCH";
+                font-size: 11px;
+                font-weight: 700;
+                color: #9299a8;
+                vertical-alignment: center;
+            }
+
+            IconButton {
+                x: parent.width - self.width - 10px;
+                y: 10px;
+                flat: true;
+                icon: PatchIcons.close;
+                clicked => { root.cancel(); }
+            }
+
+            Text {
+                x: 16px;
+                y: 52px;
+                text: "NAME";
+                font-size: 10px;
+                font-weight: 700;
+                color: #9299a8;
+            }
+
+            Rectangle {
+                x: 16px;
+                y: 70px;
+                width: parent.width - 32px;
+                height: 32px;
+                border-radius: 4px;
+                background: #17191f;
+                border-width: 1px;
+                border-color: input.has-focus ? #4d99f2 : #424754;
+
+                input := TextInput {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    text <=> root.name;
+                    single-line: true;
+                    font-size: 12px;
+                    color: #e8eaf0;
+                    selection-background-color: #4d99f2;
+                    selection-foreground-color: #ffffff;
+                    vertical-alignment: center;
+                    init => {
+                        self.focus();
+                        self.select-all();
+                    }
+                    edited => { root.edited(); }
+                    accepted => { root.save(root.name, root.confirm-overwrite); }
+                }
+
+                if root.name == "": Text {
+                    x: 10px;
+                    text: "Patch name";
+                    font-size: 12px;
+                    color: #5c6372;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                x: 16px;
+                y: 110px;
+                width: parent.width - 32px;
+                height: 28px;
+                text: root.error != "" ? root.error : root.confirm-overwrite ? "\"" + root.existing-name + "\" already exists. Overwrite it?" : "";
+                font-size: 11px;
+                color: root.error != "" ? #f26d6d : #f2b84d;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+
+            HorizontalLayout {
+                x: parent.width - self.width - 16px;
+                y: parent.height - 22px - 16px;
+                width: self.preferred-width;
+                height: 22px;
+                spacing: 8px;
+
+                TextButton {
+                    text: "CANCEL";
+                    clicked => { root.cancel(); }
+                }
+
+                TextButton {
+                    text: root.confirm-overwrite ? "OVERWRITE" : "SAVE";
+                    clicked => { root.save(root.name, root.confirm-overwrite); }
+                }
+            }
+        }
+    }
+}

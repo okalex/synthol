@@ -13,6 +13,8 @@ export struct OscillatorRow {
     level-text: string,
 }
 
+import { PatchBrowser, PatchSelector, SaveDialog } from "patches.slint";
+
 import "JetBrainsMono-Regular.ttf";
 
 component OutputGainSlider inherits Rectangle {
@@ -182,6 +184,26 @@ export component SynthUi inherits Window {
     callback mod-remove(int);
     callback mod-depth-changed(int, float);
     callback mod-depth-released(int);
+    // Patches; see `editor::patches`. `patches[0]` is the built-in Default.
+    in property <string> patch-name: "Default";
+    in property <bool> patch-modified;
+    in property <[string]> patches: ["Default"];
+    in property <int> current-patch: 0;
+    in property <string> patch-error;
+    in-out property <bool> patch-browser-open;
+    in-out property <bool> save-dialog-open;
+    in-out property <string> save-name;
+    in-out property <string> save-error;
+    in-out property <bool> save-confirm-overwrite;
+    in-out property <string> save-existing-name;
+    callback patch-browser-toggled();
+    callback patch-selected(int);
+    callback patch-deleted(int);
+    callback patch-previous();
+    callback patch-next();
+    callback patch-save-requested();
+    // Name, and whether the user already confirmed overwriting.
+    callback patch-saved(string, bool);
 
     title: "Synthol";
     preferred-width: 1100px;
@@ -211,6 +233,21 @@ export component SynthUi inherits Window {
                     vertical-alignment: center;
                 }
 
+                VerticalLayout {
+                    height: 66px;
+                    alignment: center;
+
+                    PatchSelector {
+                        name: root.patch-name;
+                        modified: root.patch-modified;
+                        browser-open: root.patch-browser-open;
+                        previous => { root.patch-previous(); }
+                        next => { root.patch-next(); }
+                        browse => { root.patch-browser-toggled(); }
+                        save => { root.patch-save-requested(); }
+                    }
+                }
+
                 Rectangle {
                     horizontal-stretch: 1;
                 }
@@ -232,7 +269,7 @@ export component SynthUi inherits Window {
                         alignment: center;
 
                         OutputGainSlider {
-                            width: 420px;
+                            width: 300px;
                             value <=> root.gain;
                             value-text: root.gain-text;
                             pressed => { root.gain-pressed(); }
@@ -778,6 +815,37 @@ export component SynthUi inherits Window {
         height: body.height * body.height / body.viewport-height;
         border-radius: 2px;
         background: #424754;
+    }
+
+    if root.patch-browser-open: PatchBrowser {
+        x: 0px;
+        y: 66px;
+        width: root.width;
+        height: root.height - 66px;
+        patches: root.patches;
+        current: root.current-patch;
+        error: root.patch-error;
+        dialog-open: root.save-dialog-open;
+        select(index) => { root.patch-selected(index); }
+        delete(index) => { root.patch-deleted(index); }
+        close => { root.patch-browser-open = false; }
+    }
+
+    if root.save-dialog-open: SaveDialog {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        name <=> root.save-name;
+        error: root.save-error;
+        confirm-overwrite: root.save-confirm-overwrite;
+        existing-name: root.save-existing-name;
+        save(name, overwrite) => { root.patch-saved(name, overwrite); }
+        cancel => { root.save-dialog-open = false; }
+        edited => {
+            root.save-error = "";
+            root.save-confirm-overwrite = false;
+        }
     }
 
     // Follows the pointer while the LFO is dragged onto a knob; drawn last so
