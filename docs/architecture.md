@@ -229,6 +229,23 @@ The oscillator also has a pitch offset in semitones (cached as a frequency
 ratio) and a 0-1 output level, applied per sample from the smoothed `Osc Pitch`
 and `Osc Level` parameters.
 
+Each oscillator preallocates 20 independent phases for unison. Its
+`UnisonSettings` selects 1-20 subvoices, a symmetric pitch spread
+(0-50 cents), and stereo width (0-1). Subvoices share the oscillator's
+other controls and note lifecycle. Pitch offsets are evenly spaced across
+the spread and converted to frequency ratios with `2^(cents / 1200)`,
+with equal left/right groups and a centered subvoice
+for odd counts. Linear pan gains and averaging keep zero-detune output
+at the original level, independent of voice count and width. Newly enabled
+subvoices start at the running primary phase; note-on resets every phase
+to the configured start phase. Zero detune aligns phases each sample.
+The voice mix and engine output are stereo, and each filter slot owns
+separate left/right biquad memory while sharing coefficients. The adapter
+writes both stereo channels or averages them for a mono host bus.
+Unison parameters use new stable IDs; oscillator removal shifts them
+alongside existing controls. Flat patch and host-state snapshots include
+them automatically, with defaults preserving older patches.
+
 The `Lfo` node (`engine/node/lfo.rs`) reuses the oscillator's waveform
 functions without PolyBLEP. Its phase is kept
 in `f64` because at 0.01 Hz the per-sample increment is below `f32`

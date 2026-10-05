@@ -1,4 +1,4 @@
-import { EnvelopeTimeScale, FilterResponseDisplay, AdsrEnvelopePanel, Dropdown, KnobModulation, LfoCurveHandle, LfoNode, LfoShapeEditor, ModDragHandle, ModRouteRow, ModRouteSlot, PositionMarker, SynthKnob, TabButton, TextButton, WaveformDisplay } from "controls.slint";
+import { EnvelopeTimeScale, FilterResponseDisplay, AdsrEnvelopePanel, Dropdown, DragValue, KnobModulation, LfoCurveHandle, LfoNode, LfoShapeEditor, ModDragHandle, ModRouteRow, ModRouteSlot, PositionMarker, SynthKnob, TabButton, TextButton, WaveformDisplay } from "controls.slint";
 export { EnvelopeTimeScale }
 
 export { KnobModulation, LfoCurveHandle, LfoNode, ModRouteSlot, PositionMarker }
@@ -14,6 +14,9 @@ export struct OscillatorRow {
     pitch-text: string,
     level: float,
     level-text: string,
+    unison-voices: float,
+    unison-detune: float,
+    unison-width: float,
 }
 
 import { PatchBrowser, PatchSelector, SaveDialog } from "patches.slint";
@@ -112,7 +115,7 @@ export component SynthUi inherits Window {
     in-out property <string> release-text: "1000.0 ms";
     in-out property <int> voices: 8;
     // The active oscillators; see `oscillator_row` in editor.rs.
-    in-out property <[OscillatorRow]> oscillators: [{ waveform: 0, phase: 0.0, phase-text: "0.0 °", pitch: 0.5, pitch-text: "+0.00 st", level: 1.0, level-text: "100 %" }];
+    in-out property <[OscillatorRow]> oscillators: [{ waveform: 0, phase: 0.0, phase-text: "0.0 °", pitch: 0.5, pitch-text: "+0.00 st", level: 1.0, level-text: "100 %", unison-voices: 0, unison-detune: 0, unison-width: 0 }];
     in property <int> max-oscillators: 4;
     // The oscillator tab the user picked; `current-oscillator` keeps it in
     // range while the oscillator list changes.
@@ -424,7 +427,7 @@ export component SynthUi inherits Window {
                                     }
 
                                     HorizontalLayout {
-                                        spacing: 12px;
+                                        spacing: 8px;
                                         alignment: center;
 
                                         SynthKnob {
@@ -476,6 +479,46 @@ export component SynthUi inherits Window {
                                             mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
                                             mod-depth-released(target) => { root.mod-depth-released(target); }
                                         }
+
+                                        VerticalLayout {
+                                            width: 148px;
+                                            spacing: 3px;
+                                            alignment: start;
+                                            Text {
+                                                text: "Unison";
+                                                font-size: 10px;
+                                                font-weight: 700;
+                                                color: #9299a8;
+                                                height: 13px;
+                                            }
+                                            DragValue {
+                                                label: "Voices";
+                                                value: root.current-osc.unison-voices;
+                                                minimum: 1;
+                                                maximum: 20;
+                                                parameter-id: 3;
+                                                changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
+                                                released(id) => { root.osc-released(root.current-oscillator, id); }
+                                            }
+                                            DragValue {
+                                                label: "Detune";
+                                                value: root.current-osc.unison-detune;
+                                                maximum: 50;
+                                                suffix: " cents";
+                                                parameter-id: 4;
+                                                changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
+                                                released(id) => { root.osc-released(root.current-oscillator, id); }
+                                            }
+                                            DragValue {
+                                                label: "Width";
+                                                value: root.current-osc.unison-width;
+                                                suffix: " %";
+                                                parameter-id: 5;
+                                                changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
+                                                released(id) => { root.osc-released(root.current-oscillator, id); }
+                                            }
+                                        }
+
                                     }
                                 }
                             }

@@ -457,6 +457,11 @@ pub(crate) mod tests {
         source.set_normalized(SynthParamsParamId::FilterCutoff.into(), 0.25);
         source.set_normalized(SynthParamsParamId::OscCount.into(), 1.0);
         source.set_normalized(SynthParamsParamId::Osc2Level.into(), 0.4);
+        for ids in crate::plugin::OSCILLATOR_PARAMS {
+            source.set_normalized(ids.unison_voices.into(), 1.0);
+            source.set_normalized(ids.unison_detune.into(), 0.4);
+            source.set_normalized(ids.unison_width.into(), 0.75);
+        }
         let json = Patch::capture(&source).to_json("Test", &source).unwrap();
         assert!(json.contains("\"format\": \"synthol-patch\""));
 
@@ -526,6 +531,24 @@ pub(crate) mod tests {
         assert!(
             Patch::from_json(r#"{"format":"synthol-patch","version":99,"parameters":[]}"#).is_err()
         );
+    }
+
+    #[test]
+    fn older_patches_restore_unison_defaults() {
+        let params = SynthParams::default();
+        for ids in crate::plugin::OSCILLATOR_PARAMS {
+            for id in [ids.unison_voices, ids.unison_detune, ids.unison_width] {
+                params.set_normalized(id.into(), 1.0);
+            }
+        }
+        let old =
+            Patch::from_json(r#"{"format":"synthol-patch","version":1,"parameters":[]}"#).unwrap();
+        apply(&params, &old);
+        for ids in crate::plugin::OSCILLATOR_PARAMS {
+            assert_eq!(params.get_plain(ids.unison_voices.into()), Some(1.0));
+            assert_eq!(params.get_plain(ids.unison_detune.into()), Some(0.0));
+            assert_eq!(params.get_plain(ids.unison_width.into()), Some(0.0));
+        }
     }
 
     #[test]

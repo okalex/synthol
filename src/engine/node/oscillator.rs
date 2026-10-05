@@ -12,12 +12,34 @@ pub enum Waveform {
 }
 
 const MAX_INCREMENT: f32 = 0.49;
+pub const MAX_UNISON_VOICES: usize = 20;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UnisonSettings {
+    pub voices: usize,
+    /// Symmetric pitch spread in cents, from 0 to 50 (100 cents per semitone).
+    pub detune: f32,
+    /// Stereo separation, from 0 to 1.
+    pub width: f32,
+}
+
+impl Default for UnisonSettings {
+    fn default() -> Self {
+        Self {
+            voices: 1,
+            detune: 0.0,
+            width: 0.0,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Oscillator {
     sample_rate: f32,
     /// Normalized phase in `0.0..1.0`.
     phase: f32,
+    unison_phases: [f32; MAX_UNISON_VOICES - 1],
+    unison_count: usize,
     /// Normalized phase each note starts from, in `0.0..1.0`.
     start_phase: f32,
     frequency: f32,
@@ -36,6 +58,8 @@ impl Default for Oscillator {
         Self {
             sample_rate: 44_100.0,
             phase: 0.0,
+            unison_phases: [0.0; MAX_UNISON_VOICES - 1],
+            unison_count: 1,
             start_phase: 0.0,
             frequency: 0.0,
             amplitude: 0.0,
@@ -52,6 +76,8 @@ impl Oscillator {
     pub fn reset(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
         self.phase = 0.0;
+        self.unison_phases.fill(0.0);
+        self.unison_count = 1;
         self.frequency = 0.0;
         self.amplitude = 0.0;
         self.active_note = None;
@@ -96,6 +122,7 @@ impl Oscillator {
                 self.frequency = midi_note_frequency(note);
                 self.amplitude = f32::from(velocity) / 127.0;
                 self.phase = self.start_phase;
+                self.unison_phases.fill(self.start_phase);
             }
             MidiEvent::NoteOn { note, .. } | MidiEvent::NoteOff { note } => {
                 if self.active_note == Some(note) {
@@ -106,15 +133,54 @@ impl Oscillator {
     }
 
     pub fn next_sample(&mut self) -> f32 {
+        self.next_stereo_sample(UnisonSettings::default())[0]
+    }
+
+    pub fn next_stereo_sample(&mut self, settings: UnisonSettings) -> [f32; 2] {
         if self.amplitude == 0.0 {
-            return 0.0;
+            return [0.0; 2];
         }
 
-        // Keep transposed notes below Nyquist.
-        let increment = (self.frequency * self.pitch_ratio / self.sample_rate).min(MAX_INCREMENT);
-        let output =
-            waveform_sample(self.waveform, self.phase, increment) * self.amplitude * self.level;
-        self.phase = (self.phase + increment).fract();
+        let count = settings.voices.clamp(1, MAX_UNISON_VOICES);
+        let detune = settings.detune.clamp(0.0, 50.0);
+        let width = settings.width.clamp(0.0, 1.0);
+        if count > self.unison_count {
+            self.unison_phases[self.unison_count - 1..count - 1].fill(self.phase);
+        }
+        self.unison_count = count;
+        let base_increment = self.frequency * self.pitch_ratio / self.sample_rate;
+        let gain = self.amplitude * self.level / count as f32;
+        let mut output = [0.0; 2];
+        let start_phase = self.phase;
+        for index in 0..count {
+            let position = if count == 1 {
+                0.0
+            } else {
+                2.0 * index as f32 / (count - 1) as f32 - 1.0
+            };
+            let pan = if 2 * index + 1 == count {
+                0.0
+            } else if index < count / 2 {
+                -width
+            } else {
+                width
+            };
+            let phase = if index == 0 {
+                &mut self.phase
+            } else {
+                &mut self.unison_phases[index - 1]
+            };
+            if detune == 0.0 {
+                *phase = start_phase;
+            }
+            // Clamp each detuned voice below Nyquist, including PolyBLEP shapes.
+            let increment =
+                (base_increment * (position * detune / 1200.0).exp2()).min(MAX_INCREMENT);
+            let sample = waveform_sample(self.waveform, *phase, increment) * gain;
+            *phase = (*phase + increment).fract();
+            output[0] += sample * (1.0 - pan);
+            output[1] += sample * (1.0 + pan);
+        }
         output
     }
 
@@ -207,7 +273,10 @@ pub fn midi_note_frequency(note: u8) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Oscillator, Waveform, midi_note_frequency, render_cycle, waveform_sample};
+    use super::{
+        MAX_UNISON_VOICES, Oscillator, TAU, UnisonSettings, Waveform, midi_note_frequency,
+        render_cycle, waveform_sample,
+    };
     use crate::engine::MidiEvent;
 
     const WAVEFORMS: [Waveform; 4] = [
@@ -476,5 +545,144 @@ mod tests {
             assert!((full * 0.25 - quarter).abs() < 1e-6);
         }
         assert!(sine_note(0.0, 0.0).iter().all(|&s| s == 0.0));
+    }
+    #[test]
+    fn unison_detunes_symmetrically_and_pans_pairs_with_a_centered_odd_voice() {
+        for count in 1..=MAX_UNISON_VOICES {
+            for width in [0.0, 0.5, 1.0] {
+                let settings = UnisonSettings {
+                    voices: count,
+                    detune: 50.0,
+                    width,
+                };
+                let mut oscillator = Oscillator::default();
+                oscillator.reset(48_000.0);
+                oscillator.set_start_phase(0.125);
+                oscillator.handle_event(MidiEvent::NoteOn {
+                    note: 69,
+                    velocity: 127,
+                });
+                let mut phases = vec![0.125; count];
+                for _ in 0..2000 {
+                    let mut expected = [0.0; 2];
+                    for (index, phase) in phases.iter_mut().enumerate() {
+                        let offset = if count == 1 {
+                            0.0
+                        } else {
+                            (2 * index) as f32 / (count - 1) as f32 - 1.0
+                        };
+                        let pan = if 2 * index + 1 == count {
+                            0.0
+                        } else {
+                            if index < count / 2 { -width } else { width }
+                        };
+                        let sample = (TAU * *phase).sin() / count as f32;
+                        expected[0] += sample * (1.0 - pan);
+                        expected[1] += sample * (1.0 + pan);
+                        *phase = (*phase + 440.0 / 48_000.0 * (offset / 24.0).exp2()).fract();
+                    }
+                    let actual = oscillator.next_stereo_sample(settings);
+                    for channel in 0..2 {
+                        assert!(
+                            (actual[channel] - expected[channel]).abs() < 1e-5,
+                            "{count} voices, width {width}, channel {channel}"
+                        );
+                    }
+                    if width == 0.0 {
+                        assert_eq!(actual[0], actual[1]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_detune_stays_centered_and_preserves_single_oscillator_level() {
+        for count in 1..=MAX_UNISON_VOICES {
+            let mut reference = Oscillator::default();
+            let mut unison = Oscillator::default();
+            for oscillator in [&mut reference, &mut unison] {
+                oscillator.reset(48_000.0);
+                oscillator.handle_event(MidiEvent::NoteOn {
+                    note: 69,
+                    velocity: 127,
+                });
+            }
+            for _ in 0..1000 {
+                let expected = reference.next_sample();
+                let actual = unison.next_stereo_sample(UnisonSettings {
+                    voices: count,
+                    detune: 0.0,
+                    width: 1.0,
+                });
+                assert!((actual[0] - actual[1]).abs() < 1e-6);
+                assert!((actual[0] - expected).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn maximum_unison_is_finite_and_bounded_at_high_pitches_for_every_waveform() {
+        for waveform in WAVEFORMS {
+            let mut oscillator = Oscillator::default();
+            oscillator.reset(44_100.0);
+            oscillator.set_waveform(waveform);
+            oscillator.set_pitch(24.0);
+            oscillator.handle_event(MidiEvent::NoteOn {
+                note: 127,
+                velocity: 127,
+            });
+            for _ in 0..1000 {
+                let sample = oscillator.next_stereo_sample(UnisonSettings {
+                    voices: MAX_UNISON_VOICES,
+                    detune: 50.0,
+                    width: 1.0,
+                });
+                assert!(sample.iter().all(|s| s.is_finite() && s.abs() <= 1.00001));
+            }
+        }
+    }
+
+    #[test]
+    fn unison_retrigger_reset_and_live_count_changes_keep_valid_phases() {
+        let mut oscillator = Oscillator::default();
+        oscillator.reset(48_000.0);
+        oscillator.set_start_phase(0.25);
+        let event = MidiEvent::NoteOn {
+            note: 69,
+            velocity: 127,
+        };
+        let settings = UnisonSettings {
+            voices: 20,
+            detune: 50.0,
+            width: 1.0,
+        };
+        oscillator.handle_event(event);
+        for _ in 0..500 {
+            oscillator.next_stereo_sample(settings);
+        }
+        oscillator.handle_event(event);
+        let first = oscillator.next_stereo_sample(settings);
+        assert!((first[0] - 1.0).abs() < 1e-6);
+        assert!((first[1] - 1.0).abs() < 1e-6);
+        for count in [0, 1, 20, 2, usize::MAX, 3] {
+            let sample = oscillator.next_stereo_sample(UnisonSettings {
+                voices: count,
+                ..settings
+            });
+            assert!(sample.iter().all(|s| s.is_finite() && s.abs() <= 1.00001));
+        }
+        oscillator.next_stereo_sample(UnisonSettings {
+            detune: 0.0,
+            ..settings
+        });
+        assert!(
+            oscillator
+                .unison_phases
+                .iter()
+                .all(|&phase| phase == oscillator.phase)
+        );
+        oscillator.reset(48_000.0);
+        assert_eq!(oscillator.next_stereo_sample(settings), [0.0; 2]);
     }
 }

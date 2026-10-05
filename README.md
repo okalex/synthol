@@ -59,6 +59,26 @@ shape as it plays from the chosen start phase, updating live while the knob
 turns. It is computed from the oscillator's own sample function rather than
 drawn by hand.
 
+To the right of each oscillator's knobs, **Unison** provides three
+click-and-drag numeric boxes. Drag up to increase a value and down to
+decrease it; hold Shift for finer adjustment:
+
+- **Voices**: 1 (default) to 20, independently of MIDI polyphony.
+- **Detune**: 0 (default) to 50 cents. One cent is one hundredth of a
+  semitone. Voices are evenly spaced in pitch from the negative to positive
+  detune amount around the note; 50 cents spans -half to +half a semitone.
+- **Width**: 0% (default) to 100%. At 0% all voices are centered; at 100%
+  half are hard left and half hard right. Odd counts leave one voice centered.
+  One voice stays centered regardless of detune or width. At zero detune,
+  voices are phase-aligned, so width alone does not create stereo separation.
+
+The unison mix is averaged to avoid multiplying the oscillator's level by
+its voice count. Each subvoice starts at the Phase knob's position and
+shares the oscillator's waveform, pitch/level modulation, and note gate.
+Stereo is preserved through every filter; mono output folds down the two
+channels. All three controls are host-automatable and saved in patches and
+host sessions. Older patches default to one unison voice.
+
 The **Filter** card selects a 12 dB/octave (two-pole) low-pass, high-pass, or
 band-pass filter, with **Cutoff** (20 Hz to 20 kHz) and **Q** (0.1 to 20)
 knobs, plus a **Mix** knob (0% to 100%); all are host-automatable. Mix defaults

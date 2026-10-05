@@ -12,7 +12,7 @@ use super::{MAX_ENVELOPES, MAX_LFOS, MAX_OSCILLATORS, OscillatorSettings};
 #[derive(Clone, Copy, Debug)]
 pub(super) struct VoiceControls {
     pub effects: EffectControls,
-    /// Per-oscillator settings; only pitch and level are read here.
+    /// Per-oscillator pitch, level, and unison settings.
     pub oscillators: [OscillatorSettings; MAX_OSCILLATORS],
     /// How many oscillators, from the first, sound.
     pub oscillator_count: usize,
@@ -32,7 +32,7 @@ pub(super) struct Voice {
     oscillators: [Oscillator; MAX_OSCILLATORS],
     /// Each voice designs its own filter so the LFO can move it per note.
     filters: [Filter; MAX_EFFECTS],
-    filter_states: [BiquadState; MAX_EFFECTS],
+    filter_states: [[BiquadState; 2]; MAX_EFFECTS],
     envelopes: [AdsrEnvelope; MAX_ENVELOPES],
     envelope_count: usize,
     /// This note's LFO: restarted on every note press and stopped when the
@@ -67,7 +67,9 @@ impl Voice {
         }
         for (filter, state) in self.filters.iter_mut().zip(&mut self.filter_states) {
             filter.prepare(sample_rate);
-            state.reset();
+            for channel in state {
+                channel.reset();
+            }
         }
         for lfo in &mut self.lfos {
             lfo.reset(sample_rate);
@@ -86,7 +88,9 @@ impl Voice {
     pub(super) fn set_effect_chain(&mut self, old: &EffectChain, new: &EffectChain) {
         for slot in 0..MAX_EFFECTS {
             if old.slots().contains(&slot) != new.slots().contains(&slot) {
-                self.filter_states[slot].reset();
+                for channel in &mut self.filter_states[slot] {
+                    channel.reset();
+                }
             }
         }
     }
@@ -143,7 +147,9 @@ impl Voice {
         // retriggered, still-sounding voice keeps it to avoid a click.
         if !self.is_active() {
             for state in &mut self.filter_states {
-                state.reset();
+                for channel in state {
+                    channel.reset();
+                }
             }
         }
         for oscillator in &mut self.oscillators {
@@ -178,9 +184,9 @@ impl Voice {
     }
 
     /// Renders one sample with `controls` modulated by LFOs and ADSRs.
-    pub(super) fn next_sample(&mut self, controls: &VoiceControls) -> f32 {
+    pub(super) fn next_sample(&mut self, controls: &VoiceControls) -> [f32; 2] {
         if !self.is_active() {
-            return 0.0;
+            return [0.0; 2];
         }
 
         // The voice LFO keeps running in sync mode so its display stays
@@ -194,13 +200,20 @@ impl Voice {
         self.apply_controls(controls, values, envelope_values);
 
         let oscillator_count = controls.oscillator_count.clamp(1, MAX_OSCILLATORS);
-        let mut audio = self.oscillators[..oscillator_count]
+        let mut audio = [0.0; 2];
+        for (oscillator, settings) in self.oscillators[..oscillator_count]
             .iter_mut()
-            .map(Oscillator::next_sample)
-            .sum();
+            .zip(&controls.oscillators)
+        {
+            let sample = oscillator.next_stereo_sample(settings.unison);
+            for channel in 0..2 {
+                audio[channel] += sample[channel];
+            }
+        }
         for &slot in controls.effects.chain.slots() {
-            audio =
-                self.filter_states[slot].process_sample(self.filters[slot].coefficients(), audio);
+            for (state, sample) in self.filter_states[slot].iter_mut().zip(&mut audio) {
+                *sample = state.process_sample(self.filters[slot].coefficients(), *sample);
+            }
         }
 
         if !self.is_active() {
@@ -215,7 +228,9 @@ impl Voice {
             oscillator.stop();
         }
         for state in &mut self.filter_states {
-            state.reset();
+            for channel in state {
+                channel.reset();
+            }
         }
         for lfo in &mut self.lfos {
             lfo.stop();

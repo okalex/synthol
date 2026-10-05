@@ -10,7 +10,7 @@ use crate::engine::node::envelope::AdsrSettings;
 use crate::engine::{
     FilterMode, LfoMode, LfoPoint, LfoPositions, LfoSettings, LfoShape, MAX_ENVELOPES, MAX_LFOS,
     MAX_OSCILLATORS, MAX_VOICES, MOD_SLOTS, MidiEvent, ModDestination, ModRoute, SynthEngine,
-    Waveform,
+    UnisonSettings, Waveform,
 };
 
 #[derive(ParamEnum)]
@@ -1025,6 +1025,86 @@ pub struct SynthParams {
     pub filter_31: effects::Filter31Params,
     #[nested(base = 10180)]
     pub filter_32: effects::Filter32Params,
+    #[param(name = "Osc 1 Unison Voices", range = "discrete(1, 20)", default = 1)]
+    pub osc_1_unison_voices: IntParam,
+    #[param(
+        name = "Osc 1 Unison Detune",
+        range = "linear(0, 50)",
+        default = 0.0,
+        unit = "none",
+        smooth = "linear(10)",
+        format = "format_cents"
+    )]
+    pub osc_1_unison_detune: FloatParam,
+    #[param(
+        name = "Osc 1 Unison Width",
+        range = "linear(0, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub osc_1_unison_width: FloatParam,
+    #[param(name = "Osc 2 Unison Voices", range = "discrete(1, 20)", default = 1)]
+    pub osc_2_unison_voices: IntParam,
+    #[param(
+        name = "Osc 2 Unison Detune",
+        range = "linear(0, 50)",
+        default = 0.0,
+        unit = "none",
+        smooth = "linear(10)",
+        format = "format_cents"
+    )]
+    pub osc_2_unison_detune: FloatParam,
+    #[param(
+        name = "Osc 2 Unison Width",
+        range = "linear(0, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub osc_2_unison_width: FloatParam,
+    #[param(name = "Osc 3 Unison Voices", range = "discrete(1, 20)", default = 1)]
+    pub osc_3_unison_voices: IntParam,
+    #[param(
+        name = "Osc 3 Unison Detune",
+        range = "linear(0, 50)",
+        default = 0.0,
+        unit = "none",
+        smooth = "linear(10)",
+        format = "format_cents"
+    )]
+    pub osc_3_unison_detune: FloatParam,
+    #[param(
+        name = "Osc 3 Unison Width",
+        range = "linear(0, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub osc_3_unison_width: FloatParam,
+    #[param(name = "Osc 4 Unison Voices", range = "discrete(1, 20)", default = 1)]
+    pub osc_4_unison_voices: IntParam,
+    #[param(
+        name = "Osc 4 Unison Detune",
+        range = "linear(0, 50)",
+        default = 0.0,
+        unit = "none",
+        smooth = "linear(10)",
+        format = "format_cents"
+    )]
+    pub osc_4_unison_detune: FloatParam,
+    #[param(
+        name = "Osc 4 Unison Width",
+        range = "linear(0, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_percent"
+    )]
+    pub osc_4_unison_width: FloatParam,
     /// Name of the loaded patch, saved with the host session. Empty means
     /// the built-in "Default" patch; see `crate::patch`.
     #[persist]
@@ -1486,11 +1566,22 @@ pub struct OscillatorParamIds {
     pub phase: SynthParamsParamId,
     pub pitch: SynthParamsParamId,
     pub level: SynthParamsParamId,
+    pub unison_voices: SynthParamsParamId,
+    pub unison_detune: SynthParamsParamId,
+    pub unison_width: SynthParamsParamId,
 }
 
 impl OscillatorParamIds {
-    pub const fn all(&self) -> [SynthParamsParamId; 4] {
-        [self.waveform, self.phase, self.pitch, self.level]
+    pub const fn all(&self) -> [SynthParamsParamId; 7] {
+        [
+            self.waveform,
+            self.phase,
+            self.pitch,
+            self.level,
+            self.unison_voices,
+            self.unison_detune,
+            self.unison_width,
+        ]
     }
 }
 
@@ -1500,24 +1591,36 @@ pub const OSCILLATOR_PARAMS: [OscillatorParamIds; MAX_OSCILLATORS] = [
         phase: SynthParamsParamId::Osc1Phase,
         pitch: SynthParamsParamId::Osc1Pitch,
         level: SynthParamsParamId::Osc1Level,
+        unison_voices: SynthParamsParamId::Osc1UnisonVoices,
+        unison_detune: SynthParamsParamId::Osc1UnisonDetune,
+        unison_width: SynthParamsParamId::Osc1UnisonWidth,
     },
     OscillatorParamIds {
         waveform: SynthParamsParamId::Osc2Type,
         phase: SynthParamsParamId::Osc2Phase,
         pitch: SynthParamsParamId::Osc2Pitch,
         level: SynthParamsParamId::Osc2Level,
+        unison_voices: SynthParamsParamId::Osc2UnisonVoices,
+        unison_detune: SynthParamsParamId::Osc2UnisonDetune,
+        unison_width: SynthParamsParamId::Osc2UnisonWidth,
     },
     OscillatorParamIds {
         waveform: SynthParamsParamId::Osc3Type,
         phase: SynthParamsParamId::Osc3Phase,
         pitch: SynthParamsParamId::Osc3Pitch,
         level: SynthParamsParamId::Osc3Level,
+        unison_voices: SynthParamsParamId::Osc3UnisonVoices,
+        unison_detune: SynthParamsParamId::Osc3UnisonDetune,
+        unison_width: SynthParamsParamId::Osc3UnisonWidth,
     },
     OscillatorParamIds {
         waveform: SynthParamsParamId::Osc4Type,
         phase: SynthParamsParamId::Osc4Phase,
         pitch: SynthParamsParamId::Osc4Pitch,
         level: SynthParamsParamId::Osc4Level,
+        unison_voices: SynthParamsParamId::Osc4UnisonVoices,
+        unison_detune: SynthParamsParamId::Osc4UnisonDetune,
+        unison_width: SynthParamsParamId::Osc4UnisonWidth,
     },
 ];
 
@@ -1583,6 +1686,10 @@ impl SynthParams {
         format!("{value:.0} %")
     }
 
+    fn format_cents(&self, value: f64) -> String {
+        format!("{value:.0} cents")
+    }
+
     fn oscillator_params(
         &self,
     ) -> [(
@@ -1615,6 +1722,31 @@ impl SynthParams {
                 &self.osc_4_phase,
                 &self.osc_4_pitch,
                 &self.osc_4_level,
+            ),
+        ]
+    }
+
+    fn unison_params(&self) -> [(&IntParam, &FloatParam, &FloatParam); MAX_OSCILLATORS] {
+        [
+            (
+                &self.osc_1_unison_voices,
+                &self.osc_1_unison_detune,
+                &self.osc_1_unison_width,
+            ),
+            (
+                &self.osc_2_unison_voices,
+                &self.osc_2_unison_detune,
+                &self.osc_2_unison_width,
+            ),
+            (
+                &self.osc_3_unison_voices,
+                &self.osc_3_unison_detune,
+                &self.osc_3_unison_width,
+            ),
+            (
+                &self.osc_4_unison_voices,
+                &self.osc_4_unison_detune,
+                &self.osc_4_unison_width,
             ),
         ]
     }
@@ -1802,6 +1934,7 @@ impl PluginLogic for Synth {
             .engine
             .set_oscillator_count(params.osc_count.value_usize());
         let oscillators = params.oscillator_params();
+        let unison = params.unison_params();
         for (index, (waveform, phase, _, _)) in oscillators.iter().enumerate() {
             state.engine.set_waveform(index, waveform.value().into());
             state.engine.set_start_phase(index, phase.read() / 360.0);
@@ -1848,6 +1981,15 @@ impl PluginLogic for Synth {
                 state
                     .engine
                     .set_oscillator_level(index, level.read() / 100.0);
+                let (voices, detune, width) = unison[index];
+                state.engine.set_oscillator_unison(
+                    index,
+                    UnisonSettings {
+                        voices: voices.value_usize(),
+                        detune: detune.read(),
+                        width: width.read() / 100.0,
+                    },
+                );
             }
             for (index, routes) in params.mod_routes().iter().enumerate() {
                 state.engine.set_lfo_modulation(index, routes);
@@ -1855,9 +1997,15 @@ impl PluginLogic for Synth {
             for (index, routes) in params.envelope_routes().iter().enumerate() {
                 state.engine.set_envelope_modulation(index, routes);
             }
-            let sample = state.engine.next_sample(db_to_linear(params.volume.read()));
+            let sample = state
+                .engine
+                .next_stereo_sample(db_to_linear(params.volume.read()));
             for channel in 0..output_channels {
-                buffer.output(channel)[sample_index] = sample;
+                buffer.output(channel)[sample_index] = if output_channels == 1 {
+                    (sample[0] + sample[1]) * 0.5
+                } else {
+                    sample[channel]
+                };
             }
         }
 

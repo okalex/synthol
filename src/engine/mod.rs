@@ -14,7 +14,7 @@ use node::envelope::AdsrSettings;
 pub use node::filter::{FilterMode, FilterSettings};
 use node::lfo::Lfo;
 pub use node::lfo::{LfoMode, LfoPoint, LfoSettings, LfoShape, MAX_LFO_POINTS};
-pub use node::oscillator::Waveform;
+pub use node::oscillator::{MAX_UNISON_VOICES, UnisonSettings, Waveform};
 use voice::{Voice, VoiceControls};
 
 /// Hard upper bound on simultaneous voices.
@@ -37,6 +37,7 @@ pub struct OscillatorSettings {
     pub pitch: f32,
     /// Gain (`0.0..=1.0`), before modulation.
     pub level: f32,
+    pub unison: UnisonSettings,
 }
 
 impl Default for OscillatorSettings {
@@ -46,6 +47,7 @@ impl Default for OscillatorSettings {
             start_phase: 0.0,
             pitch: 0.0,
             level: 1.0,
+            unison: UnisonSettings::default(),
         }
     }
 }
@@ -191,6 +193,13 @@ impl SynthEngine {
         self.set_start_phase(index, settings.start_phase);
         self.set_oscillator_pitch(index, settings.pitch);
         self.set_oscillator_level(index, settings.level);
+        self.set_oscillator_unison(index, settings.unison);
+    }
+
+    pub fn set_oscillator_unison(&mut self, index: usize, settings: UnisonSettings) {
+        if let Some(oscillator) = self.oscillators.get_mut(index) {
+            oscillator.unison = settings;
+        }
     }
 
     /// Transpose oscillator `index` by `semitones`, before modulation.
@@ -374,6 +383,11 @@ impl SynthEngine {
     }
 
     pub fn next_sample(&mut self, gain: f32) -> f32 {
+        let [left, right] = self.next_stereo_sample(gain);
+        (left + right) * 0.5
+    }
+
+    pub fn next_stereo_sample(&mut self, gain: f32) -> [f32; 2] {
         // Advance the shared LFO every sample, even with no notes, so it
         // free-runs.
         let sync_lfos = std::array::from_fn(|index| {
@@ -389,13 +403,14 @@ impl SynthEngine {
             sync_lfos,
             lfo_count: self.lfo_count,
         };
-        let output: f32 = self
-            .voices
-            .iter_mut()
-            .map(|voice| voice.next_sample(&controls))
-            .sum();
-
-        output * gain
+        let mut output = [0.0; 2];
+        for voice in &mut self.voices {
+            let sample = voice.next_sample(&controls);
+            for channel in 0..2 {
+                output[channel] += sample[channel];
+            }
+        }
+        output.map(|sample| sample * gain)
     }
 
     pub fn has_active_note(&self) -> bool {

@@ -775,6 +775,9 @@ fn oscillator_row(
         pitch_text: state.format_param(params.pitch).into(),
         level: state.get_param(params.level),
         level_text: state.format_param(params.level).into(),
+        unison_voices: state.get_param(params.unison_voices),
+        unison_detune: state.get_param(params.unison_detune),
+        unison_width: state.get_param(params.unison_width),
     }
 }
 
@@ -1324,13 +1327,16 @@ fn oscillator_params(oscillator: i32) -> Option<&'static crate::plugin::Oscillat
         .and_then(|index| OSCILLATOR_PARAMS.get(index))
 }
 
-/// An oscillator knob's parameter. Id 0 is pitch, 1 level and 2 phase.
+/// Oscillator controls: pitch, level, phase, unison voices, detune, width.
 fn oscillator_parameter(oscillator: i32, id: i32) -> Option<SynthParamsParamId> {
     let params = oscillator_params(oscillator)?;
     match id {
         0 => Some(params.pitch),
         1 => Some(params.level),
         2 => Some(params.phase),
+        3 => Some(params.unison_voices),
+        4 => Some(params.unison_detune),
+        5 => Some(params.unison_width),
         _ => None,
     }
 }
@@ -2020,6 +2026,93 @@ mod tests {
     }
 
     #[test]
+    fn unison_boxes_drag_clamp_and_shift_with_removed_oscillators() {
+        use slint::ComponentHandle;
+        use slint::platform::WindowEvent;
+        use slint::platform::software_renderer::PremultipliedRgbaColor;
+
+        truce_slint::platform::ensure_platform();
+        let window = truce_slint::platform::create_slint_window();
+        window.set_size(slint::PhysicalSize::new(1100, 1100));
+        let ui = SynthUi::new().unwrap();
+        let params = Arc::new(SynthParams::default());
+        let state = editor_test_context(params.clone());
+        let sync = setup_editor(state.clone(), ui.clone_strong());
+        sync(&state);
+        ui.show().unwrap();
+        let mut pixels = vec![PremultipliedRgbaColor::default(); 1100 * 1100];
+        assert!(window.draw_if_needed(|renderer| {
+            renderer.render(&mut pixels, 1100);
+        }));
+        let color = |x: usize, y: usize| {
+            let pixel = pixels[y * 1100 + x];
+            (pixel.red, pixel.green, pixel.blue)
+        };
+        let bottom = (150..400)
+            .filter(|&y| color(31, y) == (17, 19, 25))
+            .last()
+            .unwrap();
+        let rows: Vec<_> = (bottom + 10..bottom + 115)
+            .filter(|&y| color(400, y) == (41, 45, 54) && color(400, y - 1) != (41, 45, 54))
+            .collect();
+        assert_eq!(
+            rows.len(),
+            3,
+            "three numeric boxes must be right of all oscillator knobs"
+        );
+        let drag = |row: usize, delta: f32| {
+            let start = slint::LogicalPosition::new(400.0, rows[row] as f32 + 8.0);
+            let end = slint::LogicalPosition::new(start.x, start.y + delta);
+            ui.window().dispatch_event(WindowEvent::PointerPressed {
+                position: start,
+                button: slint::platform::PointerEventButton::Left,
+            });
+            ui.window()
+                .dispatch_event(WindowEvent::PointerMoved { position: end });
+            ui.window().dispatch_event(WindowEvent::PointerReleased {
+                position: end,
+                button: slint::platform::PointerEventButton::Left,
+            });
+            sync(&state);
+        };
+        for (row, id, minimum, maximum) in [
+            (0, SynthParamsParamId::Osc1UnisonVoices, 1.0, 20.0),
+            (1, SynthParamsParamId::Osc1UnisonDetune, 0.0, 50.0),
+            (2, SynthParamsParamId::Osc1UnisonWidth, 0.0, 100.0),
+        ] {
+            drag(row, -50.0);
+            let middle = params.get_plain(id.into()).unwrap();
+            assert!(middle > minimum && middle < maximum);
+            drag(row, -200.0);
+            assert_eq!(params.get_plain(id.into()), Some(maximum));
+            drag(row, 200.0);
+            assert_eq!(params.get_plain(id.into()), Some(minimum));
+        }
+        ui.invoke_oscillator_add();
+        ui.set_selected_oscillator(1);
+        sync(&state);
+        for (id, value) in [(3, 1.0), (4, 0.4), (5, 0.75)] {
+            ui.invoke_osc_changed(1, id, value);
+            ui.invoke_osc_released(1, id);
+        }
+        sync(&state);
+        let row = ui.get_oscillators().row_data(1).unwrap();
+        assert_eq!(row.unison_voices, 1.0);
+        assert_eq!(row.unison_detune, 0.4);
+        assert_eq!(row.unison_width, 0.75);
+        assert_eq!(params.osc_1_unison_voices.value_usize(), 1);
+        ui.invoke_oscillator_remove(0);
+        sync(&state);
+        assert_eq!(params.osc_1_unison_voices.value_usize(), 20);
+        assert_eq!(params.osc_1_unison_detune.value(), 20.0);
+        assert_eq!(params.osc_1_unison_width.value(), 75.0);
+        assert_eq!(params.osc_2_unison_voices.value_usize(), 1);
+        assert_eq!(params.osc_2_unison_detune.value(), 0.0);
+        assert_eq!(params.osc_2_unison_width.value(), 0.0);
+        ui.hide().unwrap();
+    }
+
+    #[test]
     fn effects_chain_editor_adds_edits_pointer_reorders_removes_and_caps_at_32() {
         use crate::plugin::effects::effect_ids;
         use slint::ComponentHandle;
@@ -2293,7 +2386,7 @@ mod tests {
             "plots must align in two columns"
         );
         let plot_bottom = *oscillator_plot.last().unwrap();
-        for x in [184, 280, 376, 820] {
+        for x in [110, 202, 294, 820] {
             assert_eq!(
                 pixel_at(&active_pixels, x, plot_bottom + 52),
                 (41, 45, 54),
@@ -2875,7 +2968,19 @@ mod tests {
         );
         assert_eq!(oscillator_parameter(4, 0), None);
         assert_eq!(oscillator_parameter(-1, 0), None);
-        assert_eq!(oscillator_parameter(0, 3), None);
+        assert_eq!(
+            oscillator_parameter(0, 3),
+            Some(SynthParamsParamId::Osc1UnisonVoices)
+        );
+        assert_eq!(
+            oscillator_parameter(1, 4),
+            Some(SynthParamsParamId::Osc2UnisonDetune)
+        );
+        assert_eq!(
+            oscillator_parameter(3, 5),
+            Some(SynthParamsParamId::Osc4UnisonWidth)
+        );
+        assert_eq!(oscillator_parameter(0, 6), None);
         assert_eq!(
             destination_parameter(ModDestination::OscPitch(2)),
             u32::from(SynthParamsParamId::Osc3Pitch)

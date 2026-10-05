@@ -20,6 +20,133 @@ fn stays_silent_without_midi() {
 }
 
 #[test]
+fn unison_parameters_have_independent_ranges_defaults_and_saved_values() {
+    use crate::plugin::{OSCILLATOR_PARAMS, SynthParams};
+    use truce::prelude::*;
+
+    let params = SynthParams::default();
+    for (index, ids) in OSCILLATOR_PARAMS.iter().enumerate() {
+        assert_eq!(
+            params
+                .format_value(ids.unison_detune.into(), 50.0)
+                .as_deref(),
+            Some("50 cents")
+        );
+        for (id, default, maximum) in [
+            (ids.unison_voices, 1.0, 20.0),
+            (ids.unison_detune, 0.0, 50.0),
+            (ids.unison_width, 0.0, 100.0),
+        ] {
+            assert_eq!(params.get_plain(id.into()), Some(default));
+            params.set_normalized(id.into(), 1.0);
+            assert_eq!(params.get_plain(id.into()), Some(maximum));
+            params.set_normalized(id.into(), index as f64 / 3.0);
+        }
+    }
+    let (ids, values) = params.collect_values();
+    let restored = SynthParams::default();
+    restored.restore_values(&ids.into_iter().zip(values).collect::<Vec<_>>());
+    for ids in OSCILLATOR_PARAMS {
+        for id in [ids.unison_voices, ids.unison_detune, ids.unison_width] {
+            assert_eq!(restored.get_plain(id.into()), params.get_plain(id.into()));
+        }
+    }
+}
+
+#[test]
+fn each_oscillator_unison_reaches_stereo_output_and_stops_on_note_off() {
+    use crate::plugin::{OSCILLATOR_PARAMS, SynthParamsParamId};
+    use std::time::Duration;
+    use truce_test::driver;
+
+    for (index, ids) in OSCILLATOR_PARAMS.iter().enumerate() {
+        for voices in [2, 3, 20] {
+            let render = |width, detune, mix| {
+                let mut driver = driver!(Plugin)
+                    .duration(Duration::from_millis(100))
+                    .set_param(SynthParamsParamId::EnvCount, 0.0)
+                    .set_param(SynthParamsParamId::OscCount, index as f64 / 3.0)
+                    .set_param(SynthParamsParamId::FilterMix, mix)
+                    .set_param(ids.unison_voices, (voices - 1) as f64 / 19.0)
+                    .set_param(ids.unison_detune, detune)
+                    .set_param(ids.unison_width, width);
+                for (other, params) in OSCILLATOR_PARAMS.iter().enumerate() {
+                    driver = driver.set_param(params.level, if other == index { 1.0 } else { 0.0 });
+                }
+                driver
+                    .script(|script| {
+                        script.note_on(69, 1.0);
+                        script.wait_ms(70);
+                        script.note_off(69);
+                    })
+                    .run()
+            };
+            let centered = render(0.0, 1.0, 0.0);
+            assert_eq!(centered.output[0], centered.output[1]);
+            let wide = render(1.0, 1.0, 0.0);
+            assert!(
+                wide.output[0]
+                    .iter()
+                    .zip(&wide.output[1])
+                    .any(|(left, right)| (left - right).abs() > 0.1)
+            );
+            let boundary = (wide.sample_rate * 0.07) as usize;
+            for channel in &wide.output {
+                assert!(channel[boundary..].iter().all(|&sample| sample == 0.0));
+                assert!(
+                    channel
+                        .iter()
+                        .all(|sample| sample.is_finite() && sample.abs() < 1.00001)
+                );
+            }
+            let no_detune = render(1.0, 0.0, 0.0);
+            for (left, right) in no_detune.output[0].iter().zip(&no_detune.output[1]) {
+                assert!((left - right).abs() < 1e-6);
+            }
+            let filtered = render(1.0, 1.0, 1.0);
+            assert!(
+                filtered.output[0]
+                    .iter()
+                    .zip(&filtered.output[1])
+                    .any(|(left, right)| (left - right).abs() > 0.1),
+                "filters must not collapse stereo"
+            );
+        }
+    }
+}
+
+#[test]
+fn unison_detune_uses_cents_at_the_host_output() {
+    use crate::plugin::SynthParamsParamId;
+    use std::time::Duration;
+    use truce_test::driver;
+
+    for cents in [10.0, 50.0] {
+        let result = driver!(Plugin)
+            .duration(Duration::from_millis(1200))
+            .set_param(SynthParamsParamId::EnvCount, 0.0)
+            .set_param(SynthParamsParamId::FilterMix, 0.0)
+            .set_param(SynthParamsParamId::Osc1UnisonVoices, 1.0 / 19.0)
+            .set_param(SynthParamsParamId::Osc1UnisonDetune, cents / 50.0)
+            .set_param(SynthParamsParamId::Osc1UnisonWidth, 1.0)
+            .script(|script| script.note_on(69, 1.0))
+            .run();
+        let start = (result.sample_rate * 0.2) as usize;
+        for (channel, sign) in [(0, -1.0), (1, 1.0)] {
+            let cycles = result.output[channel][start..]
+                .windows(2)
+                .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
+                .count();
+            let expected_hz = 440.0 * 2.0_f64.powf(sign * cents / 1200.0);
+            assert!(
+                (cycles as f64 - expected_hz).abs() <= 1.0,
+                "{cents} cents, channel {channel}: {cycles} Hz vs {expected_hz} Hz"
+            );
+        }
+    }
+}
+
+#[test]
 fn note_off_stops_the_oscillator() {
     use std::time::Duration;
     use truce_test::{assertions, driver};
@@ -38,6 +165,36 @@ fn note_off_stops_the_oscillator() {
     assertions::assert_nonzero_after(&result, Duration::from_millis(9));
     assertions::assert_silence_after(&result, Duration::from_millis(1_020));
     assertions::assert_no_nans(&result);
+}
+
+#[test]
+fn mono_unison_output_is_the_average_of_stereo_after_filtering() {
+    use crate::plugin::SynthParamsParamId;
+    use std::time::Duration;
+    use truce_test::driver;
+
+    let render = |channels| {
+        driver!(Plugin)
+            .channels(channels)
+            .duration(Duration::from_millis(100))
+            .set_param(SynthParamsParamId::Osc1UnisonVoices, 1.0)
+            .set_param(SynthParamsParamId::Osc1UnisonDetune, 1.0)
+            .set_param(SynthParamsParamId::Osc1UnisonWidth, 1.0)
+            .set_param(SynthParamsParamId::FilterCutoff, 0.4)
+            .script(|script| script.note_on(69, 1.0))
+            .run()
+    };
+    let mono = render(1);
+    let stereo = render(2);
+    assert_eq!(mono.output.len(), 1);
+    assert_eq!(mono.output[0].len(), stereo.output[0].len());
+    for ((mono, left), right) in mono.output[0]
+        .iter()
+        .zip(&stereo.output[0])
+        .zip(&stereo.output[1])
+    {
+        assert_eq!(*mono, (left + right) * 0.5);
+    }
 }
 
 #[test]
