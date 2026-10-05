@@ -236,7 +236,7 @@ impl SynthEngine {
         match settings.mode {
             LfoMode::Sync if index < self.lfo_count && !lfo.is_running() => lfo.start(),
             LfoMode::Sync => {}
-            LfoMode::Trigger => lfo.stop(),
+            LfoMode::Trigger | LfoMode::Envelope => lfo.stop(),
         }
         for voice in &mut self.voices {
             voice.set_lfo_settings(index, settings);
@@ -274,7 +274,7 @@ impl SynthEngine {
                     positions.newest = Some(0);
                 }
             }
-            LfoMode::Trigger => {
+            LfoMode::Trigger | LfoMode::Envelope => {
                 let mut newest_start = None;
                 for (index, voice) in self.voices.iter().enumerate() {
                     let Some(phase) = voice.lfo_phase(lfo_index) else {
@@ -980,9 +980,32 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let reference = render(None);
-        for mode in [super::LfoMode::Trigger, super::LfoMode::Sync] {
+        for mode in [
+            super::LfoMode::Trigger,
+            super::LfoMode::Sync,
+            super::LfoMode::Envelope,
+        ] {
             assert_eq!(render(Some(lfo_settings(mode))), reference);
         }
+    }
+
+    #[test]
+    fn envelope_mode_runs_once_per_note_and_restarts_on_retrigger() {
+        let mut engine = SynthEngine::default();
+        engine.reset(4.0);
+        engine.set_lfo_settings(lfo_settings(super::LfoMode::Envelope));
+
+        note_on(&mut engine, 60);
+        assert_eq!(running_phases(&engine), [0.0]);
+        run(&mut engine, 2);
+        assert!(running_phases(&engine).is_empty());
+
+        note_on(&mut engine, 60);
+        assert_eq!(running_phases(&engine), [0.0]);
+        run(&mut engine, 1);
+        assert_eq!(running_phases(&engine), [0.5]);
+        run(&mut engine, 1);
+        assert!(running_phases(&engine).is_empty());
     }
 
     use super::{ModDestination, ModRoute};

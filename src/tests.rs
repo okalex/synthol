@@ -395,9 +395,12 @@ fn lfo_shape_and_mode_parameters_list_their_options() {
     }
 
     assert_eq!(params.lfo_mode.index(), 0);
-    assert_eq!(LfoModeType::variant_names(), ["Trigger", "Sync"]);
+    assert_eq!(
+        LfoModeType::variant_names(),
+        ["Trigger", "Envelope", "Sync"]
+    );
     params.set_normalized(SynthParamsParamId::LfoMode.into(), 1.0);
-    assert_eq!(params.lfo_mode.index(), 1);
+    assert_eq!(params.lfo_mode.index(), 2);
 }
 
 #[test]

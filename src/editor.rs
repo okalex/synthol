@@ -2610,7 +2610,8 @@ mod tests {
         assert_eq!(lfo_shape_to_normalized(0), 0.0);
         assert_eq!(lfo_shape_to_normalized(3), 1.0);
         assert_eq!(lfo_mode_to_normalized(0), 0.0);
-        assert_eq!(lfo_mode_to_normalized(1), 1.0);
+        assert_eq!(lfo_mode_to_normalized(1), 0.5);
+        assert_eq!(lfo_mode_to_normalized(2), 1.0);
         assert_eq!(lfo_mode_to_normalized(5), 1.0);
     }
 

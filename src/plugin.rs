@@ -74,6 +74,7 @@ impl From<LfoShapeType> for Waveform {
 #[derive(ParamEnum)]
 pub enum LfoModeType {
     Trigger,
+    Envelope,
     Sync,
 }
 
@@ -81,6 +82,7 @@ impl From<LfoModeType> for LfoMode {
     fn from(mode: LfoModeType) -> Self {
         match mode {
             LfoModeType::Trigger => Self::Trigger,
+            LfoModeType::Envelope => Self::Envelope,
             LfoModeType::Sync => Self::Sync,
         }
     }

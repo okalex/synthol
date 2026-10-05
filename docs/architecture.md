@@ -230,14 +230,15 @@ ratio) and a 0-1 output level, applied per sample from the smoothed `Osc Pitch`
 and `Osc Level` parameters.
 
 The `Lfo` node (`engine/node/lfo.rs`) reuses the oscillator's waveform
-functions without PolyBLEP and has no mode logic of its own. Its phase is kept
+functions without PolyBLEP. Its phase is kept
 in `f64` because at 0.01 Hz the per-sample increment is below `f32`
 resolution. Each voice owns one: the voice's note-on (including retrigger and
 voice stealing) restarts it at phase 0, and it stops when the voice goes
 silent, so notes have independent LFOs. `SynthEngine` also owns a shared
 `sync_lfo` that free-runs while the mode is `Sync`. The engine's
 `lfo_positions()` reports what to display: in `Trigger`, each sounding voice's
-phase plus the most recently started voice; in `Sync`, only the shared LFO.
+phase plus the most recently started voice; in `Envelope`, each still-running
+voice's phase until its first cycle completes; in `Sync`, only the shared LFO.
 The `LFO Shape`, `LFO Rate`, and `LFO Mode` parameters are read once per
 block. After each block the plugin publishes the positions through Truce
 meter slots `lfo_position_0` to `lfo_position_7` (encoded as `1 + phase`, with

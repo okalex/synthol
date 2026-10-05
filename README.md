@@ -107,12 +107,14 @@ does not make it sound.
 
 Each LFO has independent controls and four routing slots. A dropdown selects its shape (sine, square, triangle, or sawtooth, without
 band-limiting), a **Rate** knob sets 0.01 Hz to 30 Hz on a log taper, and a
-**Mode** dropdown selects **Trigger** or **Sync**; all three are
+**Mode** dropdown selects **Trigger**, **Envelope**, or **Sync**; all three are
 host-automatable. The shape and mode selectors sit side by side above the
 plot, with Rate centered below it. In Trigger mode every note gets its own LFO, which starts
 from 0° when that note is pressed and stops when that note's release ends, so
 a note played later starts a fresh cycle while earlier notes' LFOs keep
 running. In Sync mode a single shared LFO runs continuously and ignores notes.
+In Envelope mode each note starts its own LFO at 0° and runs through one cycle,
+then stops even if the note is still held; a retrigger starts a fresh cycle.
 A plot in the selected tab shows one cycle of its shape. Vertical lines mark the current
 positions, updated every editor frame from the audio thread: the most
 recently pressed note's line is solid and older notes' lines are faint (up to
@@ -141,7 +143,7 @@ new route starts at a modest depth: 1 semitone, 25% level, 1 octave of cutoff,
 in semitones, cutoff in octaves, and Q multiplicatively (shown as ×/÷).
 Modulated values stay within each knob's range, and several slots targeting the
 same destination add up, including routes from different LFOs, before clamping.
-Every note is modulated by its own LFO in Trigger mode
+Every note is modulated by its own LFO in Trigger and Envelope modes
 and by the shared LFO in Sync mode, and each voice has its own filter, so
 modulating the cutoff doesn't affect other notes. Removing an oscillator clears
 the routes that target it, and routes to later oscillators follow them as they

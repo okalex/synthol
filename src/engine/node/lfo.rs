@@ -243,8 +243,8 @@ fn bend(t: f32, curve: f32) -> f32 {
     }
 }
 
-/// How LFOs relate to notes. The engine applies the mode; an `Lfo` itself
-/// only runs between `start` and `stop`.
+/// How LFOs relate to notes. The engine applies the mode; an `Lfo` handles
+/// the one-shot phase behavior for Envelope mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LfoMode {
     /// Each note gets its own LFO, started from phase 0 when the note is
@@ -253,6 +253,8 @@ pub enum LfoMode {
     Trigger,
     /// One LFO runs continuously, shared by every note.
     Sync,
+    /// Each note gets its own LFO, which stops after one cycle.
+    Envelope,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -282,6 +284,8 @@ pub struct Lfo {
     phase: f64,
     shape: LfoShape,
     frequency_hz: f32,
+    mode: LfoMode,
+    last_value: f32,
     running: bool,
 }
 
@@ -293,6 +297,8 @@ impl Default for Lfo {
             phase: 0.0,
             shape: settings.shape,
             frequency_hz: settings.frequency_hz,
+            mode: settings.mode,
+            last_value: 0.0,
             running: false,
         }
     }
@@ -303,10 +309,11 @@ impl Lfo {
     pub fn reset(&mut self, sample_rate: f32) {
         self.sample_rate = f64::from(sample_rate);
         self.phase = 0.0;
+        self.last_value = 0.0;
         self.running = false;
     }
 
-    /// Applies shape and rate; the mode is handled by the engine.
+    /// Applies shape and rate, and records whether this LFO is one-shot.
     pub fn set_settings(&mut self, settings: LfoSettings) {
         self.shape = settings.shape;
         self.frequency_hz = if settings.frequency_hz.is_finite() {
@@ -314,11 +321,13 @@ impl Lfo {
         } else {
             MIN_LFO_HZ
         };
+        self.mode = settings.mode;
     }
 
     /// Starts (or restarts) the cycle from phase 0.
     pub fn start(&mut self) {
         self.phase = 0.0;
+        self.last_value = 0.0;
         self.running = true;
     }
 
@@ -326,14 +335,26 @@ impl Lfo {
         self.running = false;
     }
 
-    /// The current value, then advances one sample. Returns 0 while stopped.
+    /// The current value, then advances one sample. Envelope mode holds the
+    /// last value after completing its cycle; other stopped LFOs return 0.
     pub fn next_sample(&mut self) -> f32 {
         if !self.running {
-            return 0.0;
+            return if self.mode == LfoMode::Envelope {
+                self.last_value
+            } else {
+                0.0
+            };
         }
         let value = self.shape.sample(self.phase as f32);
+        self.last_value = value;
         let increment = f64::from(self.frequency_hz) / self.sample_rate;
-        self.phase = (self.phase + increment).fract();
+        let next_phase = self.phase + increment;
+        if self.mode == LfoMode::Envelope && next_phase >= 1.0 {
+            self.phase = 1.0;
+            self.running = false;
+        } else {
+            self.phase = next_phase.fract();
+        }
         value
     }
 
@@ -384,6 +405,25 @@ mod tests {
         assert!((samples[125] - 1.0).abs() < 1e-4);
         assert!((samples[375] + 1.0).abs() < 1e-4);
         assert!(lfo.phase() < 1e-6 || lfo.phase() > 1.0 - 1e-6);
+    }
+
+    #[test]
+    fn envelope_mode_holds_its_last_value_after_one_cycle() {
+        let mut lfo = Lfo::default();
+        lfo.reset(4.0);
+        lfo.set_settings(LfoSettings {
+            shape: LfoShape::new(&[LfoPoint::new(0.0, -1.0), LfoPoint::new(1.0, 1.0)], false),
+            frequency_hz: 2.0,
+            mode: LfoMode::Envelope,
+        });
+        lfo.start();
+
+        assert_eq!(lfo.next_sample(), -1.0);
+        let last_value = lfo.next_sample();
+        assert_eq!(last_value, 0.0);
+        assert!(!lfo.is_running());
+        assert_eq!(lfo.next_sample(), last_value);
+        assert_eq!(lfo.next_sample(), last_value);
     }
 
     #[test]

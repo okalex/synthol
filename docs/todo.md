@@ -1,0 +1,14 @@
+- Unison
+  - Number of voices
+  - Detune amount
+  - Width
+- Oscillator shape knob
+- Oscillator pan
+- Per oscillator fx chain
+- More FX:
+  - Saturator
+  - Delay
+  - Compressor
+  - Reverb
+- MIDI FX:
+  - Arpeggiator
