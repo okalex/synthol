@@ -2,6 +2,8 @@ import { EnvelopeTimeScale, FilterResponseDisplay, AdsrEnvelopePanel, Dropdown, 
 export { EnvelopeTimeScale }
 
 export { KnobModulation, ModRouteSlot, PositionMarker }
+import { EffectRow, EffectCard } from "effects.slint";
+export { EffectRow }
 
 // One active oscillator's controls, as normalized parameter values.
 export struct OscillatorRow {
@@ -133,6 +135,18 @@ export component SynthUi inherits Window {
     callback osc-released(int, int);
     callback oscillator-add();
     callback oscillator-remove(int);
+    in property <[EffectRow]> effects;
+    callback effect-add();
+    callback effect-remove(int);
+    callback effect-moved(int, int);
+    callback effect-kind-selected(int, int);
+    callback effect-changed(int, int, float);
+    callback effect-released(int, int);
+    in-out property <bool> scroll-effects-to-end;
+    private property <int> dragged-effect: -1;
+    private property <length> effect-pointer-x;
+    private property <length> effect-pointer-y;
+    private property <int> effect-drop-index: clamp(floor((root.effect-pointer-x - effects-chain.absolute-position.x) / 360px), 0, root.effects.length - 1);
     in-out property <int> filter-type: 0;
     in-out property <float> filter-cutoff: 1.0;
     in-out property <string> filter-cutoff-text: "20.0 kHz";
@@ -677,131 +691,133 @@ export component SynthUi inherits Window {
                     width: 100%;
                     spacing: 4px;
 
-                    Text {
-                        text: "EFFECTS";
-                        font-size: 10px;
-                        font-weight: 700;
-                        color: #9299a8;
+                    HorizontalLayout {
                         height: 22px;
-                        vertical-alignment: center;
+                        spacing: 12px;
+                        Text {
+                            text: "EFFECTS  " + root.effects.length + " / 32";
+                            font-size: 10px;
+                            font-weight: 700;
+                            color: #9299a8;
+                            vertical-alignment: center;
+                        }
+                        if root.effects.length < 32: TextButton {
+                            text: "+ FILTER";
+                            clicked => { root.effect-add(); }
+                        }
+                        Text {
+                            text: "Drag a filter title to reorder  |  Signal flows left to right";
+                            font-size: 10px;
+                            color: #7c8394;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
                     }
 
                     effects := Flickable {
                         height: 360px;
                         interactive: false;
-                        viewport-width: max(self.width, effects-chain.preferred-width);
+                        viewport-width: max(self.width, root.effects.length * 360px - 12px);
                         viewport-height: self.height;
+                        changed width => {
+                            self.viewport-x = clamp(self.viewport-x, min(0px, self.width - self.viewport-width), 0px);
+                        }
+                        changed viewport-width => {
+                            self.viewport-x = clamp(self.viewport-x, min(0px, self.width - self.viewport-width), 0px);
+                            if root.scroll-effects-to-end {
+                                self.viewport-x = min(0px, self.width - self.viewport-width);
+                                root.scroll-effects-to-end = false;
+                            }
+                        }
+                        if root.effects.length == 0: Text {
+                            text: "No effects. Add a filter to start a chain.";
+                            color: #9299a8;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: effects.width;
+                            height: effects.height;
+                        }
 
                         effects-chain := HorizontalLayout {
                             x: 0px;
                             y: 0px;
-                            width: self.preferred-width;
+                            width: max(0px, root.effects.length * 360px - 12px);
                             height: effects.height;
                             spacing: 12px;
                             alignment: start;
 
-                                Rectangle {
-                                    width: 348px;
-                                    background: #20232b;
-                                    border-radius: 8px;
-
-                                    VerticalLayout {
-                                        padding: 12px;
-                                        spacing: 10px;
-
-                                        HorizontalLayout {
-                                            spacing: 12px;
-                                            alignment: start;
-
-                                            Text {
-                                                text: "FILTER";
-                                                font-size: 10px;
-                                                font-weight: 700;
-                                                color: #9299a8;
-                                                vertical-alignment: center;
-                                            }
-
-                                            Dropdown {
-                                                options: ["Low Pass", "High Pass", "Band Pass"];
-                                                selected-index: root.filter-type;
-                                                selected(index) => { root.filter-type-selected(index); }
-                                            }
-                                        }
-
-                                        FilterResponseDisplay {
-                                            width: 324px;
-                                            height: 180px;
-                                            filter-type: root.filter-type;
-                                            cutoff: root.filter-cutoff;
-                                            q: root.filter-q;
-                                            mix: root.filter-mix;
-                                            response-path(filter-type, cutoff, q, mix, width, height) => {
-                                                return root.filter-response-path(filter-type, cutoff, q, mix, width, height);
-                                            }
-                                        }
-
-                                        HorizontalLayout {
-                                            width: 100%;
-                                            spacing: 12px;
-                                            alignment: center;
-
-                                            SynthKnob {
-                                                value: root.filter-cutoff;
-                                                label: "CUTOFF";
-                                                parameter-id: 0;
-                                                value-text: root.filter-cutoff-text;
-                                                mod-target: root.cutoff-mod-target;
-                                                modulation: root.knob-mods[root.cutoff-mod-target];
-                                                mod-drag-active: mod-handle.dragging;
-                                                mod-drag-x: mod-handle.pointer-x;
-                                                mod-drag-y: mod-handle.pointer-y;
-                                                mod-drop-count: mod-handle.drop-count;
-                                                mod-dropped(target) => { root.mod-assign(target); }
-                                                changed(id, value) => { root.filter-changed(id, value); }
-                                                released(id) => { root.filter-released(id); }
-                                                mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
-                                                mod-depth-released(target) => { root.mod-depth-released(target); }
-                                            }
-
-                                            SynthKnob {
-                                                value: root.filter-q;
-                                                label: "Q";
-                                                parameter-id: 1;
-                                                value-text: root.filter-q-text;
-                                                mod-target: root.cutoff-mod-target + 1;
-                                                modulation: root.knob-mods[root.cutoff-mod-target + 1];
-                                                mod-drag-active: mod-handle.dragging;
-                                                mod-drag-x: mod-handle.pointer-x;
-                                                mod-drag-y: mod-handle.pointer-y;
-                                                mod-drop-count: mod-handle.drop-count;
-                                                mod-dropped(target) => { root.mod-assign(target); }
-                                                changed(id, value) => { root.filter-changed(id, value); }
-                                                released(id) => { root.filter-released(id); }
-                                                mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
-                                                mod-depth-released(target) => { root.mod-depth-released(target); }
-                                            }
-
-                                            SynthKnob {
-                                                value: root.filter-mix;
-                                                label: "MIX";
-                                                parameter-id: 2;
-                                                value-text: root.filter-mix-text;
-                                                mod-target: root.cutoff-mod-target + 2;
-                                                modulation: root.knob-mods[root.cutoff-mod-target + 2];
-                                                mod-drag-active: mod-handle.dragging;
-                                                mod-drag-x: mod-handle.pointer-x;
-                                                mod-drag-y: mod-handle.pointer-y;
-                                                mod-drop-count: mod-handle.drop-count;
-                                                mod-dropped(target) => { root.mod-assign(target); }
-                                                changed(id, value) => { root.filter-changed(id, value); }
-                                                released(id) => { root.filter-released(id); }
-                                                mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
-                                                mod-depth-released(target) => { root.mod-depth-released(target); }
-                                            }
-                                        }
+                                for effect[index] in root.effects: EffectCard {
+                                    effect: effect;
+                                    dragged: root.dragged-effect == effect.slot;
+                                    drop-hover: root.dragged-effect >= 0 && root.effect-drop-index == index;
+                                    knob-mods: root.knob-mods;
+                                    mod-drag-active: mod-handle.dragging;
+                                    mod-drag-x: mod-handle.pointer-x;
+                                    mod-drag-y: mod-handle.pointer-y;
+                                    mod-drop-count: mod-handle.drop-count;
+                                    kind-selected(kind) => { root.effect-kind-selected(effect.slot, kind); }
+                                    changed(id, value) => { root.effect-changed(effect.slot, id, value); }
+                                    released(id) => { root.effect-released(effect.slot, id); }
+                                    remove => { root.effect-remove(effect.slot); }
+                                    response-path(kind, cutoff, q, mix, width, height) => {
+                                        return root.filter-response-path(kind, cutoff, q, mix, width, height);
                                     }
+                                    mod-assign(target) => { root.mod-assign(target); }
+                                    mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                                    mod-depth-released(target) => { root.mod-depth-released(target); }
+                                    drag-started => { root.dragged-effect = effect.slot; }
+                                    drag-moved(x, y) => {
+                                        root.effect-pointer-x = x;
+                                        root.effect-pointer-y = y;
+                                    }
+                                    drag-ended(x, y) => {
+                                        root.effect-pointer-x = x;
+                                        root.effect-pointer-y = y;
+                                        if root.dragged-effect >= 0 && x >= effects.absolute-position.x
+                                            && x < effects.absolute-position.x + effects.width
+                                            && y >= effects.absolute-position.y
+                                            && y < effects.absolute-position.y + effects.height {
+                                            root.effect-moved(root.dragged-effect, root.effect-drop-index);
+                                        }
+                                        root.dragged-effect = -1;
+                                    }
+                                    drag-cancelled => { root.dragged-effect = -1; }
                                 }
                             }
+                    }
+
+                    if effects.viewport-width > effects.width: Rectangle {
+                        height: 10px;
+                        background: #20232b;
+                        border-radius: 5px;
+                        function seek(pointer: length) {
+                            effects.viewport-x = -clamp((pointer - thumb.width / 2) / (self.width - thumb.width), 0, 1)
+                                * (effects.viewport-width - effects.width);
+                        }
+                        thumb := Rectangle {
+                            x: -effects.viewport-x / (effects.viewport-width - effects.width) * (parent.width - self.width);
+                            width: max(24px, parent.width * effects.width / effects.viewport-width);
+                            height: 10px;
+                            border-radius: 5px;
+                            background: scroll-touch.pressed ? #4d99f2 : #424754;
+                        }
+                        scroll-touch := TouchArea {
+                            mouse-cursor: MouseCursor.ew-resize;
+                            moved => { if self.pressed { parent.seek(self.mouse-x); } }
+                            clicked => { parent.seek(self.mouse-x); }
+                        }
+                    }
+                }
+
+                Timer {
+                    interval: 30ms;
+                    running: root.dragged-effect >= 0;
+                    triggered => {
+                        if root.effect-pointer-x < effects.absolute-position.x + 36px {
+                            effects.viewport-x = min(0px, effects.viewport-x + 18px);
+                        } else if root.effect-pointer-x > effects.absolute-position.x + effects.width - 36px {
+                            effects.viewport-x = max(min(0px, effects.width - effects.viewport-width), effects.viewport-x - 18px);
+                        }
                     }
                 }
 
@@ -861,5 +877,23 @@ export component SynthUi inherits Window {
         border-width: 2px;
         border-color: #ffe2a8;
         opacity: 0.85;
+    }
+
+    if root.dragged-effect >= 0: Rectangle {
+        x: root.effect-pointer-x + 12px;
+        y: root.effect-pointer-y + 12px;
+        width: 110px;
+        height: 26px;
+        border-radius: 4px;
+        background: #292d36;
+        border-width: 1px;
+        border-color: #4d99f2;
+        Text {
+            text: "FILTER " + (root.dragged-effect + 1);
+            color: #e8eaf0;
+            font-size: 10px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
     }
 }

@@ -1,0 +1,119 @@
+import { Dropdown, FilterResponseDisplay, KnobModulation, SynthKnob, TextButton } from "controls.slint";
+
+export struct EffectRow {
+    slot: int,
+    kind: int,
+    cutoff: float,
+    cutoff-text: string,
+    q: float,
+    q-text: string,
+    mix: float,
+    mix-text: string,
+}
+
+export component EffectCard inherits Rectangle {
+    in property <EffectRow> effect;
+    in property <bool> drop-hover;
+    in property <bool> dragged;
+    in property <[KnobModulation]> knob-mods;
+    in property <bool> mod-drag-active;
+    in property <length> mod-drag-x;
+    in property <length> mod-drag-y;
+    in property <int> mod-drop-count;
+    private property <int> target: 8 + 3 * root.effect.slot;
+    callback kind-selected(int);
+    callback changed(int, float);
+    callback released(int);
+    callback remove();
+    callback drag-started();
+    callback drag-moved(length, length);
+    callback drag-ended(length, length);
+    callback drag-cancelled();
+    callback mod-assign(int);
+    callback mod-depth-changed(int, float);
+    callback mod-depth-released(int);
+    pure callback response-path(int, float, float, float, float, float) -> string;
+
+    width: 348px;
+    background: root.dragged ? #292d36 : #20232b;
+    border-radius: 8px;
+    border-width: root.drop-hover ? 2px : 1px;
+    border-color: root.drop-hover ? #4d99f2 : #343943;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+        HorizontalLayout {
+            spacing: 8px;
+            drag-label := Rectangle {
+                min-width: 88px;
+                Text {
+                    text: "FILTER " + (root.effect.slot + 1);
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: #9299a8;
+                    vertical-alignment: center;
+                }
+                touch := TouchArea {
+                    mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
+                    moved => {
+                        if self.pressed {
+                            root.drag-moved(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
+                    pointer-event(event) => {
+                        if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                            root.drag-started();
+                            root.drag-moved(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        } else if event.kind == PointerEventKind.up {
+                            root.drag-ended(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        } else if event.kind == PointerEventKind.cancel {
+                            root.drag-cancelled();
+                        }
+                    }
+                }
+            }
+            Dropdown {
+                options: ["Low Pass", "High Pass", "Band Pass"];
+                selected-index: root.effect.kind;
+                selected(index) => { root.kind-selected(index); }
+            }
+            TextButton {
+                text: "×";
+                clicked => { root.remove(); }
+            }
+        }
+        FilterResponseDisplay {
+            width: 324px;
+            height: 180px;
+            filter-type: root.effect.kind;
+            cutoff: root.effect.cutoff;
+            q: root.effect.q;
+            mix: root.effect.mix;
+            response-path(kind, cutoff, q, mix, width, height) => {
+                return root.response-path(kind, cutoff, q, mix, width, height);
+            }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: center;
+            for control in 3: SynthKnob {
+                value: control == 0 ? root.effect.cutoff : control == 1 ? root.effect.q : root.effect.mix;
+                value-text: control == 0 ? root.effect.cutoff-text : control == 1 ? root.effect.q-text : root.effect.mix-text;
+                label: control == 0 ? "CUTOFF" : control == 1 ? "Q" : "MIX";
+                parameter-id: control;
+                mod-target: root.target + control;
+                modulation: root.knob-mods[root.target + control];
+                mod-drag-active: root.mod-drag-active;
+                mod-drag-x: root.mod-drag-x;
+                mod-drag-y: root.mod-drag-y;
+                mod-drop-count: root.mod-drop-count;
+                changed(id, value) => { root.changed(id, value); }
+                released(id) => { root.released(id); }
+                mod-dropped(target) => { root.mod-assign(target); }
+                mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                mod-depth-released(target) => { root.mod-depth-released(target); }
+            }
+        }
+    }
+}

@@ -3,10 +3,11 @@
 ## Goals
 
 Synthol is currently a small Truce instrument: MIDI drives up to eight
-oscillator voices (sine, square, triangle, or sawtooth) through a 12 dB/octave
-filter, and a Slint editor controls output gain, the oscillator waveform, the
-filter, ADSR and LFO modulators that can modulate oscillator pitch and
-level and filter cutoff and Q, and the polyphony limit. The intended product is a modular synthesizer where users
+oscillator voices (sine, square, triangle, or sawtooth) through an ordered chain
+of up to 32 two-pole filters. A Slint editor controls output gain, oscillators,
+the effects chain, ADSR and LFO modulators that can modulate oscillator pitch
+and level and each filter's cutoff, Q, and mix, and the polyphony limit.
+The intended product is a modular synthesizer where users
 can add and connect oscillators, envelopes, LFOs, filters, effects, and other
 modules.
 
@@ -19,28 +20,38 @@ belong off the real-time audio thread.
 
 The code is being migrated incrementally. The current foundation separates
 the Truce adapter, Slint editor bridge, engine, MIDI event type,
-multi-waveform oscillator, biquad filter, and reusable ADSR envelope. Engine
-construction compiles a fixed typed oscillator-to-filter-to-output
-graph once; processing follows
-its prepared order without compiling or allocating in the audio callback.
+multi-waveform oscillator, biquad filter, and reusable ADSR envelope.
+`engine/effects.rs` represents the current serial effects topology as a bounded
+list of stable slot identities, replacing the original fixed three-node graph.
+At each block boundary the adapter derives the chain from enabled/order host
+parameters. Processing mixes oscillators, then visits effects in chain order;
+there is no allocation, locking, or graph compilation in the audio callback.
 ADSRs are control sources, not audio nodes; ENV 1 defaults to multiplying
-OSC 1's level. Output gain is applied after the filter. The filter (`engine/node/filter.rs`)
+OSC 1's level. Output gain is applied after the chain. The filter (`engine/node/filter.rs`)
 is an RBJ-cookbook biquad in low-pass, high-pass, or band-pass mode. Because
-LFO modulation can move cutoff and Q per note, each voice owns a `Filter` that
+LFO modulation can move cutoff and Q per note, each voice owns a `Filter` per slot that
 recomputes its coefficients only when its modulated settings change, plus its
 own filter state, cleared when the voice goes silent. The editor's response
 plot evaluates the same coefficients' magnitude response for the unmodulated
 settings. The editor's full-width Effects section is a horizontally scrollable
-row of compact effect cards, currently containing only the filter. Its type
+row of compact filter cards. Each card's type
 selector sits above the response plot, with cutoff, Q, and mix controls below.
-Horizontal wheel or trackpad scrolling leaves knob drags unaffected. Dynamic
-effect insertion and removal remain future work.
+The editor can add/delete filters and drag their titles to reorder them.
+Horizontal scrolling, an explicit scrollbar, and edge scrolling during a
+drag make all 32 slots reachable without interfering with knob drags.
+Reordering retains settings, modulation targets, automation IDs, and per-slot
+filter memory; insertion/removal clears the changed slot's memory.
+Deleting a filter also clears routes targeting it. The first filter retains
+its original parameter IDs. Additional filters use explicit nested parameter
+bases. Route destinations retain the original 12-value enum and normalized
+automation mapping; a separate per-route selector supplies the filter identity.
+Adding future effect types should extend the slot runtime and card dispatch
+rather than introduce a parallel audio path.
 Each voice owns an LFO (`engine/node/lfo.rs`), and the engine owns
 one more shared, free-running LFO for Sync mode; `engine/modulation.rs` routes
 them to destinations. See "MIDI, notes, voices, and
-modulation" below. This fixed graph is an internal
-representation only: it is not user-editable or serialized, and graph
-publication, graph-document persistence, additional node types, and a
+modulation" below. A general connection graph,
+graph publication, graph-document persistence, additional node types, and a
 patching UI are future work. Sound patches are currently flat host-parameter
 snapshots (see "Persistence and compatibility"). This keeps the current instrument's behavior unchanged while
 establishing the boundaries for later stages.
@@ -198,8 +209,9 @@ parameter.
 
 The engine owns a fixed pool of `MAX_VOICES` (8) voices in
 `engine/voice.rs`, allocated up front so note handling never allocates on the
-audio thread. Each voice holds its own oscillator, filter, and envelope state and runs
-the shared compiled graph; voice outputs are summed before output gain. The
+audio thread. Each voice holds its own oscillator, per-effect filter, and
+envelope state and runs the shared effects order; voice outputs are summed
+before output gain. The
 host-visible `Voices` parameter (1-8) limits how many voices new notes may
 use. Allocation policy, in `SynthEngine::allocate_voice`, is: retrigger a voice
 already sounding the same note, else take a free voice, else steal the oldest
@@ -337,6 +349,9 @@ IDs are ignored. Files use the `.synthol` extension and live in
 `~/Library/Application Support/Synthol/Patches`. `src/editor/patches.rs` owns
 the browser/save UI state and applies loads through host automation. The
 loaded patch name is a `#[persist]` field so it survives session reloads.
+Effect enabled/order parameters, filter controls, and route identity selectors
+are included in the same snapshots and host state. Missing chain parameters
+default to the original single filter, so version-1 patches remain compatible.
 When the graph document lands, bump the patch format version and migrate
 version-1 parameter snapshots explicitly.
 

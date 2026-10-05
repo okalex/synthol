@@ -1,4 +1,4 @@
-mod graph;
+pub mod effects;
 mod midi;
 pub mod modulation;
 pub mod node;
@@ -6,7 +6,8 @@ mod voice;
 
 pub use midi::MidiEvent;
 
-use graph::{CompiledGraph, GraphDocument};
+pub use effects::{EffectChain, MAX_EFFECTS};
+use effects::EffectControls;
 use modulation::ModDepths;
 pub use modulation::{MOD_SLOTS, ModDestination, ModRoute};
 use node::envelope::AdsrSettings;
@@ -61,8 +62,7 @@ pub struct LfoPositions {
 
 #[derive(Debug)]
 pub struct SynthEngine {
-    graph: CompiledGraph,
-    filter: FilterSettings,
+    effects: EffectControls,
     oscillators: [OscillatorSettings; MAX_OSCILLATORS],
     /// How many oscillators, from the first, sound.
     oscillator_count: usize,
@@ -80,13 +80,8 @@ pub struct SynthEngine {
 
 impl Default for SynthEngine {
     fn default() -> Self {
-        let graph = GraphDocument::initial()
-            .compile()
-            .expect("the built-in oscillator graph must be valid");
-
         Self {
-            graph,
-            filter: FilterSettings::default(),
+            effects: EffectControls::default(),
             oscillators: [OscillatorSettings::default(); MAX_OSCILLATORS],
             oscillator_count: 1,
             depths: [ModDepths::default(); MAX_LFOS],
@@ -163,7 +158,20 @@ impl SynthEngine {
     /// modulation. Each voice recomputes its coefficients only when its
     /// (modulated) settings change, so this is cheap to call per sample.
     pub fn set_filter_settings(&mut self, settings: FilterSettings) {
-        self.filter = settings;
+        self.set_effect_filter(0, settings);
+    }
+
+    pub fn set_effect_chain(&mut self, chain: EffectChain) {
+        if self.effects.chain != chain {
+            for voice in &mut self.voices {
+                voice.set_effect_chain(&self.effects.chain, &chain);
+            }
+            self.effects.chain = chain;
+        }
+    }
+
+    pub fn set_effect_filter(&mut self, slot: usize, settings: FilterSettings) {
+        self.effects.filters[slot] = settings;
     }
 
     /// Sound the first `count` oscillators (clamped to
@@ -373,7 +381,7 @@ impl SynthEngine {
             (index < self.lfo_count && self.lfo_modes[index] == LfoMode::Sync).then_some(value)
         });
         let controls = VoiceControls {
-            filter: self.filter,
+            effects: self.effects,
             oscillators: self.oscillators,
             oscillator_count: self.oscillator_count,
             depths: self.depths,
@@ -381,11 +389,10 @@ impl SynthEngine {
             sync_lfos,
             lfo_count: self.lfo_count,
         };
-        let graph = &self.graph;
         let output: f32 = self
             .voices
             .iter_mut()
-            .map(|voice| voice.next_sample(graph, &controls))
+            .map(|voice| voice.next_sample(&controls))
             .sum();
 
         output * gain

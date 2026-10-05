@@ -4,9 +4,10 @@ use std::time::Duration;
 use truce::prelude::*;
 
 use crate::editor;
+pub mod effects;
 use crate::engine::node::envelope::AdsrSettings;
 use crate::engine::{
-    FilterMode, FilterSettings, LfoMode, LfoPositions, LfoSettings, MAX_ENVELOPES, MAX_LFOS,
+    FilterMode, LfoMode, LfoPositions, LfoSettings, MAX_ENVELOPES, MAX_LFOS,
     MAX_OSCILLATORS, MAX_VOICES, MOD_SLOTS, MidiEvent, ModDestination, ModRoute, SynthEngine,
     Waveform,
 };
@@ -148,6 +149,9 @@ impl From<Option<ModDestination>> for ModDestinationType {
             Some(ModDestination::OscPitch(3)) => Self::Osc4Pitch,
             Some(ModDestination::OscLevel(3)) => Self::Osc4Level,
             Some(ModDestination::OscPitch(_) | ModDestination::OscLevel(_)) => Self::None,
+            Some(ModDestination::EffectCutoff(_)) => Self::FilterCutoff,
+            Some(ModDestination::EffectQ(_)) => Self::FilterQ,
+            Some(ModDestination::EffectMix(_)) => Self::FilterMix,
         }
     }
 }
@@ -886,6 +890,138 @@ pub struct SynthParams {
     pub env_4_mod_4_amount: FloatParam,
     #[meter]
     pub env_4_level: MeterSlot,
+    #[param(name = "Filter Enabled", default = true)]
+    pub filter_enabled: BoolParam,
+    #[param(name = "Filter Order", range = "discrete(0, 31)", default = 0)]
+    pub filter_order: IntParam,
+    // Keep the original destination enum's normalized automation unchanged.
+    // Filter identity is an independent selector for each routing slot.
+    #[param(name = "LFO Route 1 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_1_route_1_filter: IntParam,
+    #[param(name = "LFO Route 2 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_1_route_2_filter: IntParam,
+    #[param(name = "LFO Route 3 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_1_route_3_filter: IntParam,
+    #[param(name = "LFO Route 4 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_1_route_4_filter: IntParam,
+    #[param(name = "LFO 2 Route 1 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_2_route_1_filter: IntParam,
+    #[param(name = "LFO 2 Route 2 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_2_route_2_filter: IntParam,
+    #[param(name = "LFO 2 Route 3 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_2_route_3_filter: IntParam,
+    #[param(name = "LFO 2 Route 4 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_2_route_4_filter: IntParam,
+    #[param(name = "LFO 3 Route 1 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_3_route_1_filter: IntParam,
+    #[param(name = "LFO 3 Route 2 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_3_route_2_filter: IntParam,
+    #[param(name = "LFO 3 Route 3 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_3_route_3_filter: IntParam,
+    #[param(name = "LFO 3 Route 4 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_3_route_4_filter: IntParam,
+    #[param(name = "LFO 4 Route 1 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_4_route_1_filter: IntParam,
+    #[param(name = "LFO 4 Route 2 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_4_route_2_filter: IntParam,
+    #[param(name = "LFO 4 Route 3 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_4_route_3_filter: IntParam,
+    #[param(name = "LFO 4 Route 4 Filter", range = "discrete(0, 31)", default = 0)]
+    pub lfo_4_route_4_filter: IntParam,
+    #[param(name = "ENV 1 Route 1 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_1_route_1_filter: IntParam,
+    #[param(name = "ENV 1 Route 2 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_1_route_2_filter: IntParam,
+    #[param(name = "ENV 1 Route 3 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_1_route_3_filter: IntParam,
+    #[param(name = "ENV 1 Route 4 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_1_route_4_filter: IntParam,
+    #[param(name = "ENV 2 Route 1 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_2_route_1_filter: IntParam,
+    #[param(name = "ENV 2 Route 2 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_2_route_2_filter: IntParam,
+    #[param(name = "ENV 2 Route 3 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_2_route_3_filter: IntParam,
+    #[param(name = "ENV 2 Route 4 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_2_route_4_filter: IntParam,
+    #[param(name = "ENV 3 Route 1 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_3_route_1_filter: IntParam,
+    #[param(name = "ENV 3 Route 2 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_3_route_2_filter: IntParam,
+    #[param(name = "ENV 3 Route 3 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_3_route_3_filter: IntParam,
+    #[param(name = "ENV 3 Route 4 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_3_route_4_filter: IntParam,
+    #[param(name = "ENV 4 Route 1 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_4_route_1_filter: IntParam,
+    #[param(name = "ENV 4 Route 2 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_4_route_2_filter: IntParam,
+    #[param(name = "ENV 4 Route 3 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_4_route_3_filter: IntParam,
+    #[param(name = "ENV 4 Route 4 Filter", range = "discrete(0, 31)", default = 0)]
+    pub env_4_route_4_filter: IntParam,
+    #[nested(base = 10000)]
+    pub filter_2: effects::Filter2Params,
+    #[nested(base = 10006)]
+    pub filter_3: effects::Filter3Params,
+    #[nested(base = 10012)]
+    pub filter_4: effects::Filter4Params,
+    #[nested(base = 10018)]
+    pub filter_5: effects::Filter5Params,
+    #[nested(base = 10024)]
+    pub filter_6: effects::Filter6Params,
+    #[nested(base = 10030)]
+    pub filter_7: effects::Filter7Params,
+    #[nested(base = 10036)]
+    pub filter_8: effects::Filter8Params,
+    #[nested(base = 10042)]
+    pub filter_9: effects::Filter9Params,
+    #[nested(base = 10048)]
+    pub filter_10: effects::Filter10Params,
+    #[nested(base = 10054)]
+    pub filter_11: effects::Filter11Params,
+    #[nested(base = 10060)]
+    pub filter_12: effects::Filter12Params,
+    #[nested(base = 10066)]
+    pub filter_13: effects::Filter13Params,
+    #[nested(base = 10072)]
+    pub filter_14: effects::Filter14Params,
+    #[nested(base = 10078)]
+    pub filter_15: effects::Filter15Params,
+    #[nested(base = 10084)]
+    pub filter_16: effects::Filter16Params,
+    #[nested(base = 10090)]
+    pub filter_17: effects::Filter17Params,
+    #[nested(base = 10096)]
+    pub filter_18: effects::Filter18Params,
+    #[nested(base = 10102)]
+    pub filter_19: effects::Filter19Params,
+    #[nested(base = 10108)]
+    pub filter_20: effects::Filter20Params,
+    #[nested(base = 10114)]
+    pub filter_21: effects::Filter21Params,
+    #[nested(base = 10120)]
+    pub filter_22: effects::Filter22Params,
+    #[nested(base = 10126)]
+    pub filter_23: effects::Filter23Params,
+    #[nested(base = 10132)]
+    pub filter_24: effects::Filter24Params,
+    #[nested(base = 10138)]
+    pub filter_25: effects::Filter25Params,
+    #[nested(base = 10144)]
+    pub filter_26: effects::Filter26Params,
+    #[nested(base = 10150)]
+    pub filter_27: effects::Filter27Params,
+    #[nested(base = 10156)]
+    pub filter_28: effects::Filter28Params,
+    #[nested(base = 10162)]
+    pub filter_29: effects::Filter29Params,
+    #[nested(base = 10168)]
+    pub filter_30: effects::Filter30Params,
+    #[nested(base = 10174)]
+    pub filter_31: effects::Filter31Params,
+    #[nested(base = 10180)]
+    pub filter_32: effects::Filter32Params,
     /// Name of the loaded patch, saved with the host session. Empty means
     /// the built-in "Default" patch; see `crate::patch`.
     #[persist]
@@ -893,6 +1029,21 @@ pub struct SynthParams {
 }
 
 impl SynthParams {
+    pub fn extra_effects(&self) -> [effects::EffectParams<'_>; 31] {
+        [
+            self.filter_2.controls(), self.filter_3.controls(), self.filter_4.controls(),
+            self.filter_5.controls(), self.filter_6.controls(), self.filter_7.controls(),
+            self.filter_8.controls(), self.filter_9.controls(), self.filter_10.controls(),
+            self.filter_11.controls(), self.filter_12.controls(), self.filter_13.controls(),
+            self.filter_14.controls(), self.filter_15.controls(), self.filter_16.controls(),
+            self.filter_17.controls(), self.filter_18.controls(), self.filter_19.controls(),
+            self.filter_20.controls(), self.filter_21.controls(), self.filter_22.controls(),
+            self.filter_23.controls(), self.filter_24.controls(), self.filter_25.controls(),
+            self.filter_26.controls(), self.filter_27.controls(), self.filter_28.controls(),
+            self.filter_29.controls(), self.filter_30.controls(), self.filter_31.controls(),
+            self.filter_32.controls(),
+        ]
+    }
     #[must_use]
     pub fn patch_name(&self) -> String {
         self.patch_name
@@ -913,21 +1064,24 @@ pub struct EnvelopeParamIds {
     pub adsr: [SynthParamsParamId; 4],
     pub destinations: [SynthParamsParamId; MOD_SLOTS],
     pub amounts: [SynthParamsParamId; MOD_SLOTS],
+    pub filters: [SynthParamsParamId; MOD_SLOTS],
     pub level: SynthParamsParamId,
 }
 
 impl EnvelopeParamIds {
-    pub fn all(self) -> [SynthParamsParamId; 4 + 2 * MOD_SLOTS] {
+    pub fn all(self) -> [SynthParamsParamId; 4 + 3 * MOD_SLOTS] {
         std::array::from_fn(|index| match index {
             0..4 => self.adsr[index],
             index if index < 4 + MOD_SLOTS => self.destinations[index - 4],
-            index => self.amounts[index - 4 - MOD_SLOTS],
+            index if index < 4 + 2 * MOD_SLOTS => self.amounts[index - 4 - MOD_SLOTS],
+            index => self.filters[index - 4 - 2 * MOD_SLOTS],
         })
     }
 }
 
 pub const ENV_PARAMS: [EnvelopeParamIds; MAX_ENVELOPES] = [
     EnvelopeParamIds {
+        filters: [SynthParamsParamId::Env1Route1Filter, SynthParamsParamId::Env1Route2Filter, SynthParamsParamId::Env1Route3Filter, SynthParamsParamId::Env1Route4Filter],
         adsr: [
             SynthParamsParamId::Attack,
             SynthParamsParamId::Decay,
@@ -949,6 +1103,7 @@ pub const ENV_PARAMS: [EnvelopeParamIds; MAX_ENVELOPES] = [
         level: SynthParamsParamId::Env1Level,
     },
     EnvelopeParamIds {
+        filters: [SynthParamsParamId::Env2Route1Filter, SynthParamsParamId::Env2Route2Filter, SynthParamsParamId::Env2Route3Filter, SynthParamsParamId::Env2Route4Filter],
         adsr: [
             SynthParamsParamId::Env2Attack,
             SynthParamsParamId::Env2Decay,
@@ -970,6 +1125,7 @@ pub const ENV_PARAMS: [EnvelopeParamIds; MAX_ENVELOPES] = [
         level: SynthParamsParamId::Env2Level,
     },
     EnvelopeParamIds {
+        filters: [SynthParamsParamId::Env3Route1Filter, SynthParamsParamId::Env3Route2Filter, SynthParamsParamId::Env3Route3Filter, SynthParamsParamId::Env3Route4Filter],
         adsr: [
             SynthParamsParamId::Env3Attack,
             SynthParamsParamId::Env3Decay,
@@ -991,6 +1147,7 @@ pub const ENV_PARAMS: [EnvelopeParamIds; MAX_ENVELOPES] = [
         level: SynthParamsParamId::Env3Level,
     },
     EnvelopeParamIds {
+        filters: [SynthParamsParamId::Env4Route1Filter, SynthParamsParamId::Env4Route2Filter, SynthParamsParamId::Env4Route3Filter, SynthParamsParamId::Env4Route4Filter],
         adsr: [
             SynthParamsParamId::Env4Attack,
             SynthParamsParamId::Env4Decay,
@@ -1020,24 +1177,27 @@ pub struct LfoParamIds {
     pub mode: SynthParamsParamId,
     pub destinations: [SynthParamsParamId; MOD_SLOTS],
     pub amounts: [SynthParamsParamId; MOD_SLOTS],
+    pub filters: [SynthParamsParamId; MOD_SLOTS],
     pub positions: [SynthParamsParamId; MAX_VOICES],
     pub newest: SynthParamsParamId,
 }
 
 impl LfoParamIds {
-    pub fn all(&self) -> [SynthParamsParamId; 3 + 2 * MOD_SLOTS] {
+    pub fn all(&self) -> [SynthParamsParamId; 3 + 3 * MOD_SLOTS] {
         std::array::from_fn(|index| match index {
             0 => self.shape,
             1 => self.rate,
             2 => self.mode,
             index if index < 3 + MOD_SLOTS => self.destinations[index - 3],
-            index => self.amounts[index - 3 - MOD_SLOTS],
+            index if index < 3 + 2 * MOD_SLOTS => self.amounts[index - 3 - MOD_SLOTS],
+            index => self.filters[index - 3 - 2 * MOD_SLOTS],
         })
     }
 }
 
 pub const LFO_PARAMS: [LfoParamIds; MAX_LFOS] = [
     LfoParamIds {
+        filters: [SynthParamsParamId::Lfo1Route1Filter, SynthParamsParamId::Lfo1Route2Filter, SynthParamsParamId::Lfo1Route3Filter, SynthParamsParamId::Lfo1Route4Filter],
         shape: SynthParamsParamId::LfoShape,
         rate: SynthParamsParamId::LfoRate,
         mode: SynthParamsParamId::LfoMode,
@@ -1047,6 +1207,7 @@ pub const LFO_PARAMS: [LfoParamIds; MAX_LFOS] = [
         newest: SynthParamsParamId::LfoNewest,
     },
     LfoParamIds {
+        filters: [SynthParamsParamId::Lfo2Route1Filter, SynthParamsParamId::Lfo2Route2Filter, SynthParamsParamId::Lfo2Route3Filter, SynthParamsParamId::Lfo2Route4Filter],
         shape: SynthParamsParamId::Lfo2Shape,
         rate: SynthParamsParamId::Lfo2Rate,
         mode: SynthParamsParamId::Lfo2Mode,
@@ -1075,6 +1236,7 @@ pub const LFO_PARAMS: [LfoParamIds; MAX_LFOS] = [
         newest: SynthParamsParamId::Lfo2Newest,
     },
     LfoParamIds {
+        filters: [SynthParamsParamId::Lfo3Route1Filter, SynthParamsParamId::Lfo3Route2Filter, SynthParamsParamId::Lfo3Route3Filter, SynthParamsParamId::Lfo3Route4Filter],
         shape: SynthParamsParamId::Lfo3Shape,
         rate: SynthParamsParamId::Lfo3Rate,
         mode: SynthParamsParamId::Lfo3Mode,
@@ -1103,6 +1265,7 @@ pub const LFO_PARAMS: [LfoParamIds; MAX_LFOS] = [
         newest: SynthParamsParamId::Lfo3Newest,
     },
     LfoParamIds {
+        filters: [SynthParamsParamId::Lfo4Route1Filter, SynthParamsParamId::Lfo4Route2Filter, SynthParamsParamId::Lfo4Route3Filter, SynthParamsParamId::Lfo4Route4Filter],
         shape: SynthParamsParamId::Lfo4Shape,
         rate: SynthParamsParamId::Lfo4Rate,
         mode: SynthParamsParamId::Lfo4Mode,
@@ -1347,7 +1510,13 @@ impl SynthParams {
                 destination: mod_destination_from_index(
                     self.get_plain(ENV_PARAMS[index].destinations[slot].into())
                         .expect("envelope route parameter must exist") as u32,
-                ),
+                )
+                .map(|destination| {
+                    destination.with_effect(
+                        self.get_plain(ENV_PARAMS[index].filters[slot].into())
+                            .expect("envelope filter identity must exist") as usize,
+                    )
+                }),
                 amount: amounts[index][slot].read() / 100.0,
             })
         })
@@ -1381,10 +1550,19 @@ impl SynthParams {
             ],
         ];
         // Amounts are smoothed, so read every one each sample.
-        slots.map(|slots| {
-            slots.map(|(destination, amount)| ModRoute {
-                destination: destination.value().into(),
-                amount: amount.read() / 100.0,
+        std::array::from_fn(|index| {
+            std::array::from_fn(|slot| {
+                let (destination, amount) = slots[index][slot];
+                let destination: Option<ModDestination> = destination.value().into();
+                ModRoute {
+                    destination: destination.map(|destination| {
+                        destination.with_effect(
+                            self.get_plain(LFO_PARAMS[index].filters[slot].into())
+                                .expect("LFO filter identity must exist") as usize,
+                        )
+                    }),
+                    amount: amount.read() / 100.0,
+                }
             })
         })
     }
@@ -1450,7 +1628,7 @@ impl PluginLogic for Synth {
             state.engine.set_lfo(index, settings);
         }
 
-        let filter_mode: FilterMode = params.filter_type.value().into();
+        state.engine.set_effect_chain(params.effect_chain());
 
         let mut next_event = 0;
         let output_channels = buffer.num_output_channels();
@@ -1469,12 +1647,9 @@ impl PluginLogic for Synth {
 
             // Continuous controls are smoothed per sample to avoid zipper
             // noise.
-            state.engine.set_filter_settings(FilterSettings {
-                mode: filter_mode,
-                cutoff_hz: params.filter_cutoff.read(),
-                q: params.filter_q.read(),
-                mix: params.filter_mix.read() / 100.0,
-            });
+            for (slot, settings) in params.read_effect_filters().into_iter().enumerate() {
+                state.engine.set_effect_filter(slot, settings);
+            }
             // Inactive oscillators are read too so their smoothers stay
             // current for when they're added.
             for (index, (_, _, pitch, level)) in oscillators.iter().enumerate() {

@@ -1,4 +1,4 @@
-use super::graph::CompiledGraph;
+use super::effects::{EffectChain, EffectControls, MAX_EFFECTS};
 use super::midi::MidiEvent;
 use super::modulation::{ModDepths, ModDestination};
 use super::node::envelope::{AdsrEnvelope, AdsrSettings};
@@ -11,7 +11,7 @@ use super::{MAX_ENVELOPES, MAX_LFOS, MAX_OSCILLATORS, OscillatorSettings};
 /// modulation is applied.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct VoiceControls {
-    pub filter: FilterSettings,
+    pub effects: EffectControls,
     /// Per-oscillator settings; only pitch and level are read here.
     pub oscillators: [OscillatorSettings; MAX_OSCILLATORS],
     /// How many oscillators, from the first, sound.
@@ -31,8 +31,8 @@ pub(super) struct Voice {
     /// `VoiceControls::oscillator_count` are rendered and mixed.
     oscillators: [Oscillator; MAX_OSCILLATORS],
     /// Each voice designs its own filter so the LFO can move it per note.
-    filter: Filter,
-    filter_state: BiquadState,
+    filters: [Filter; MAX_EFFECTS],
+    filter_states: [BiquadState; MAX_EFFECTS],
     envelopes: [AdsrEnvelope; MAX_ENVELOPES],
     envelope_count: usize,
     /// This note's LFO: restarted on every note press and stopped when the
@@ -48,8 +48,8 @@ impl Default for Voice {
     fn default() -> Self {
         Self {
             oscillators: Default::default(),
-            filter: Default::default(),
-            filter_state: Default::default(),
+            filters: Default::default(),
+            filter_states: Default::default(),
             envelopes: Default::default(),
             envelope_count: 1,
             lfos: Default::default(),
@@ -65,8 +65,10 @@ impl Voice {
         for oscillator in &mut self.oscillators {
             oscillator.reset(sample_rate);
         }
-        self.filter.prepare(sample_rate);
-        self.filter_state.reset();
+        for (filter, state) in self.filters.iter_mut().zip(&mut self.filter_states) {
+            filter.prepare(sample_rate);
+            state.reset();
+        }
         for lfo in &mut self.lfos {
             lfo.reset(sample_rate);
         }
@@ -79,6 +81,14 @@ impl Voice {
 
     pub(super) fn set_envelope_settings(&mut self, index: usize, settings: AdsrSettings) {
         self.envelopes[index].set_settings(settings);
+    }
+
+    pub(super) fn set_effect_chain(&mut self, old: &EffectChain, new: &EffectChain) {
+        for slot in 0..MAX_EFFECTS {
+            if old.slots().contains(&slot) != new.slots().contains(&slot) {
+                self.filter_states[slot].reset();
+            }
+        }
     }
 
     pub(super) fn set_envelope_count(&mut self, count: usize) {
@@ -132,7 +142,9 @@ impl Voice {
         // zero-length release), so clear stale filter memory here too. A
         // retriggered, still-sounding voice keeps it to avoid a click.
         if !self.is_active() {
-            self.filter_state.reset();
+            for state in &mut self.filter_states {
+                state.reset();
+            }
         }
         for oscillator in &mut self.oscillators {
             oscillator.handle_event(MidiEvent::NoteOn { note, velocity });
@@ -166,7 +178,7 @@ impl Voice {
     }
 
     /// Renders one sample with `controls` modulated by LFOs and ADSRs.
-    pub(super) fn next_sample(&mut self, graph: &CompiledGraph, controls: &VoiceControls) -> f32 {
+    pub(super) fn next_sample(&mut self, controls: &VoiceControls) -> f32 {
         if !self.is_active() {
             return 0.0;
         }
@@ -182,36 +194,29 @@ impl Voice {
         self.apply_controls(controls, values, envelope_values);
 
         let oscillator_count = controls.oscillator_count.clamp(1, MAX_OSCILLATORS);
-        let mut audio = 0.0;
-        let mut output = 0.0;
-
-        for &node in graph.execution_order() {
-            if node == graph.oscillator() {
-                audio = self.oscillators[..oscillator_count]
-                    .iter_mut()
-                    .map(Oscillator::next_sample)
-                    .sum();
-            } else if node == graph.filter() {
-                audio = self
-                    .filter_state
-                    .process_sample(self.filter.coefficients(), audio);
-            } else if node == graph.output() {
-                output = audio;
-            }
+        let mut audio = self.oscillators[..oscillator_count]
+            .iter_mut()
+            .map(Oscillator::next_sample)
+            .sum();
+        for &slot in controls.effects.chain.slots() {
+            audio = self.filter_states[slot]
+                .process_sample(self.filters[slot].coefficients(), audio);
         }
 
         if !self.is_active() {
             self.stop();
         }
 
-        output
+        audio
     }
 
     fn stop(&mut self) {
         for oscillator in &mut self.oscillators {
             oscillator.stop();
         }
-        self.filter_state.reset();
+        for state in &mut self.filter_states {
+            state.reset();
+        }
         for lfo in &mut self.lfos {
             lfo.stop();
         }
@@ -259,12 +264,16 @@ impl Voice {
             };
             oscillator.set_level(level);
         }
-        self.filter.set_settings(FilterSettings {
-            cutoff_hz: modulate(ModDestination::FilterCutoff, controls.filter.cutoff_hz),
-            q: modulate(ModDestination::FilterQ, controls.filter.q),
-            mix: modulate(ModDestination::FilterMix, controls.filter.mix),
-            ..controls.filter
-        });
+        for &slot in controls.effects.chain.slots() {
+            let settings = controls.effects.filters[slot];
+            let [cutoff, q, mix] = ModDestination::filter_destinations(slot);
+            self.filters[slot].set_settings(FilterSettings {
+                cutoff_hz: modulate(cutoff, settings.cutoff_hz),
+                q: modulate(q, settings.q),
+                mix: modulate(mix, settings.mix),
+                ..settings
+            });
+        }
     }
 
     /// The note this voice is sounding, whether held or releasing.

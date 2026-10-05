@@ -3,8 +3,8 @@
 A minimal polyphonic instrument plugin built with Rust and
 [Truce](https://github.com/truce-audio/truce). It accepts MIDI note-on and
 note-off events, uses MIDI note numbers for pitch, and scales amplitude by
-note-on velocity. Each voice applies its modulators to the oscillators and filter,
-mixes the oscillators, and runs them through the filter before output gain.
+note-on velocity. Each voice applies its modulators to the oscillators and effects,
+mixes the oscillators, and runs them through the ordered effects chain before output gain.
 The default **ENV 1** ADSR shapes **OSC 1's Level** (10 ms attack, 500 ms decay,
 -6 dB sustain, 1 s release). Up to eight voices can sound at once; a **Voices** dropdown in the editor
 (also a host-automatable parameter) sets the limit from Mono to 8. When all
@@ -27,7 +27,19 @@ needed.
 The editor opens at 1100 x 1100 logical pixels. Oscillators occupy the left
 column and Modulators the right, with larger waveform plots and their knobs
 directly underneath. The full-width, horizontally scrollable **Effects** chain
-below them currently contains a compact Filter card. ADSRs and LFOs share the
+below them starts with one compact Filter card. **+ FILTER** appends another
+filter, up to **32 effects**. Each card's × button deletes it, including the
+last one; an empty chain passes the oscillator mix straight through. Drag a
+card's title onto another card to move it to that position. The destination
+highlights blue, and dragging near either edge scrolls the chain. Scroll
+horizontally with a trackpad, Shift-wheel, or the scrollbar to reach offscreen effects.
+Signal flows **left to right**, with each filter processing the previous
+filter's output. Filter numbers are stable identities, not positions:
+reordering preserves their controls, automation, modulation routes, and DSP
+memory. Deleting a filter clears its modulation routes; adding one reuses
+the first vacant identity with default controls. The chain and all controls
+are saved in patches and host sessions. Existing patches still load with
+their original single filter. ADSRs and LFOs share the
 Modulators group, with routing slots stacked below their controls; there is no
 separate output envelope. The content remains wheel-scrollable if it exceeds
 the window. Gain and Voices occupy the right side of the title bar.
@@ -107,7 +119,7 @@ recently pressed note's line is solid and older notes' lines are faint (up to
 one per voice). Because the position comes from audio processing, a
 Sync LFO only advances while the host is processing the plugin.
 
-Each modulator can modulate any oscillator's **Pitch** and **Level** and filter
+Each modulator can modulate any oscillator's **Pitch** and **Level** and any filter's
 **Cutoff**, **Q**, and **Mix**. Drag the amber **MOD** handle from the Routing row onto one of
 those knobs (they light up while you drag) to route the selected modulator to it; to target
 another oscillator, select its tab first. A routed

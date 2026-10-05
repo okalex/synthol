@@ -9,6 +9,7 @@ use truce::prelude::*;
 use truce_slint::{KeyboardCapture, PluginContext, SlintEditor, SyncFn};
 
 mod patches;
+mod effects;
 
 use self::patches::PatchController;
 
@@ -83,6 +84,7 @@ fn setup_editor_with(
         .on_time(envelope_position_time);
     let patch_controller = Rc::new(RefCell::new(PatchController::new(library)));
     patches::wire(&ui, &state, &patch_controller);
+    let sync_effects = effects::wire(&ui, &state);
     let pending_edits = Rc::new(RefCell::new(Vec::<(SynthParamsParamId, f64)>::new()));
     let selected_envelope = {
         let ui = ui.as_weak();
@@ -390,6 +392,13 @@ fn setup_editor_with(
         let selected = selected_modulator.clone();
         move |slot: usize, destination: Option<Option<ModDestination>>, amount: Option<f32>| {
             if let Some(destination) = destination {
+                let filter_id = selected().filters()[slot];
+                set_param(
+                    &state,
+                    &pending_edits,
+                    filter_id,
+                    destination.and_then(ModDestination::effect).unwrap_or(0) as f64 / 31.0,
+                );
                 let id = selected().routing().0[slot];
                 let normalized = destination_to_normalized(destination);
                 state.params().set_normalized(id.into(), normalized);
@@ -431,8 +440,10 @@ fn setup_editor_with(
             return;
         };
         let routes = read_modulator_routes(&state_for_ui, selected());
-        let shown = shown_oscillators(state_for_ui.params().osc_count.value_usize(), &routes);
-        let destination = destination_from_option(shown, index);
+        let choices = routing_choices(state_for_ui.params(), &routes);
+        let destination = usize::try_from(index)
+            .ok()
+            .and_then(|index| choices.get(index).copied().flatten());
         let route = routes[slot];
         // A freshly routed slot starts at a useful depth rather than zero.
         let amount = match destination {
@@ -530,6 +541,7 @@ fn setup_editor_with(
             state.automate(id, value);
         }
         patches::sync(&ui, state, &patch_controller, &keyboard);
+        sync_effects(state);
 
         ui.set_gain(state.get_param(SynthParamsParamId::Volume));
         ui.set_gain_text(slint::SharedString::from(
@@ -603,10 +615,16 @@ fn setup_editor_with(
             [ModRoute::default(); MOD_SLOTS]
         };
         let shown = shown_oscillators(oscillator_count, &routes);
-        if destination_model.row_count() != destination_options(shown).len() {
-            destination_model.set_vec(destination_options(shown));
-        }
-        for (row, slot) in mod_route_slots(&routes, shown).into_iter().enumerate() {
+        let choices = routing_choices(state.params(), &routes);
+        sync_model(&destination_model, choices.iter().map(|&destination| {
+            destination_label(destination).into()
+        }).collect());
+        let slots = mod_route_slots(&routes, shown);
+        for (row, mut slot) in slots.into_iter().enumerate() {
+            slot.destination = choices
+                .iter()
+                .position(|destination| *destination == routes[row].destination)
+                .unwrap_or(0) as i32;
             if mod_slot_model.row_data(row).as_ref() != Some(&slot) {
                 mod_slot_model.set_row_data(row, slot);
             }
@@ -1044,13 +1062,19 @@ fn oscillator_parameter(oscillator: i32, id: i32) -> Option<SynthParamsParamId> 
 }
 
 /// The knob parameter each modulation destination moves.
-fn destination_parameter(destination: ModDestination) -> SynthParamsParamId {
+fn destination_parameter(destination: ModDestination) -> u32 {
     match destination {
-        ModDestination::OscPitch(index) => OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)].pitch,
-        ModDestination::OscLevel(index) => OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)].level,
-        ModDestination::FilterCutoff => SynthParamsParamId::FilterCutoff,
-        ModDestination::FilterQ => SynthParamsParamId::FilterQ,
-        ModDestination::FilterMix => SynthParamsParamId::FilterMix,
+        ModDestination::OscPitch(index) => {
+            OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)].pitch.into()
+        }
+        ModDestination::OscLevel(index) => {
+            OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)].level.into()
+        }
+        destination => {
+            let slot = destination.effect().expect("filter destination");
+            let control = (destination.index() - 2 * MAX_OSCILLATORS) % 3;
+            crate::plugin::effects::effect_ids(slot)[control + 1]
+        }
     }
 }
 
@@ -1070,7 +1094,7 @@ fn shown_oscillators(count: usize, routes: &[ModRoute]) -> usize {
 fn destination_options(oscillators: usize) -> Vec<slint::SharedString> {
     std::iter::once(None)
         .chain(dropdown_destinations(oscillators).map(Some))
-        .map(|destination| ModDestinationType::from(destination).name().into())
+        .map(|destination| destination_label(destination).into())
         .collect()
 }
 
@@ -1082,11 +1106,36 @@ fn dropdown_destinations(oscillators: usize) -> impl Iterator<Item = ModDestinat
                 ModDestination::OscLevel(index),
             ]
         })
-        .chain([
-            ModDestination::FilterCutoff,
-            ModDestination::FilterQ,
-            ModDestination::FilterMix,
-        ])
+        .chain(ModDestination::filter_destinations(0))
+}
+
+fn destination_label(destination: Option<ModDestination>) -> String {
+    match destination {
+        Some(destination) if destination.effect().is_some_and(|slot| slot > 0) => {
+            let slot = destination.effect().expect("filter destination");
+            let control = (destination.index() - 2 * MAX_OSCILLATORS) % 3;
+            format!("Filter {} {}", slot + 1, ["Cutoff", "Q", "Mix"][control])
+        }
+        destination => ModDestinationType::from(destination).name().to_owned(),
+    }
+}
+
+fn routing_choices(params: &SynthParams, routes: &[ModRoute]) -> Vec<Option<ModDestination>> {
+    let oscillators = shown_oscillators(params.osc_count.value_usize(), routes);
+    let mut choices = vec![None];
+    choices.extend((0..oscillators).flat_map(|index| {
+        [Some(ModDestination::OscPitch(index)), Some(ModDestination::OscLevel(index))]
+    }));
+    let chain = params.effect_chain();
+    for &slot in chain.slots() {
+        choices.extend(ModDestination::filter_destinations(slot).map(Some));
+    }
+    for route in routes {
+        if route.destination.is_some() && !choices.contains(&route.destination) {
+            choices.push(route.destination);
+        }
+    }
+    choices
 }
 
 /// A destination's index in `destination_options(oscillators)`.
@@ -1098,6 +1147,7 @@ fn destination_option(oscillators: usize, destination: Option<ModDestination>) -
         .map_or(0, |index| index as i32 + 1)
 }
 
+#[cfg(test)]
 fn destination_from_option(oscillators: usize, index: i32) -> Option<ModDestination> {
     let index = usize::try_from(index).ok()?.checked_sub(1)?;
     dropdown_destinations(oscillators).nth(index)
@@ -1125,6 +1175,12 @@ enum Modulator {
 }
 
 impl Modulator {
+    fn filters(self) -> [SynthParamsParamId; MOD_SLOTS] {
+        match self {
+            Self::Lfo(index) => LFO_PARAMS[index].filters,
+            Self::Envelope(index) => ENV_PARAMS[index].filters,
+        }
+    }
     fn routing(
         self,
     ) -> (
@@ -1155,7 +1211,11 @@ fn read_modulator_routes(
         let index = (destination * destination_steps() as f32).round();
         let amount = state.get_param(amounts[slot]);
         ModRoute {
-            destination: mod_destination_from_index(index as u32),
+            destination: mod_destination_from_index(index as u32).map(|destination| {
+                destination.with_effect(
+                    (state.get_param(source.filters()[slot]) * 31.0).round() as usize,
+                )
+            }),
             amount: (2.0 * amount - 1.0).clamp(-1.0, 1.0),
         }
     })
@@ -1179,9 +1239,9 @@ fn amount_to_normalized(amount: f32) -> f64 {
 fn default_mod_amount(destination: ModDestination) -> f32 {
     match destination {
         ModDestination::OscPitch(_) => 1.0 / (2.0 * MAX_PITCH_SEMITONES),
-        ModDestination::OscLevel(_) | ModDestination::FilterMix => 0.25,
-        ModDestination::FilterCutoff => 1.0 / (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).log2(),
-        ModDestination::FilterQ => 1.0 / (MAX_Q / MIN_Q).log2(),
+        ModDestination::OscLevel(_) | ModDestination::FilterMix | ModDestination::EffectMix(_) => 0.25,
+        ModDestination::FilterCutoff | ModDestination::EffectCutoff(_) => 1.0 / (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).log2(),
+        ModDestination::FilterQ | ModDestination::EffectQ(_) => 1.0 / (MAX_Q / MIN_Q).log2(),
     }
 }
 
@@ -1192,16 +1252,16 @@ fn format_mod_amount(destination: ModDestination, amount: f32) -> String {
         ModDestination::OscPitch(_) => {
             format!("{:+.2} st", amount * 2.0 * MAX_PITCH_SEMITONES)
         }
-        ModDestination::OscLevel(_) | ModDestination::FilterMix => {
+        ModDestination::OscLevel(_) | ModDestination::FilterMix | ModDestination::EffectMix(_) => {
             format!("{:+.0} %", amount * 100.0)
         }
-        ModDestination::FilterCutoff => {
+        ModDestination::FilterCutoff | ModDestination::EffectCutoff(_) => {
             format!(
                 "{:+.2} oct",
                 amount * (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).log2()
             )
         }
-        ModDestination::FilterQ => {
+        ModDestination::FilterQ | ModDestination::EffectQ(_) => {
             let ratio = (amount * (MAX_Q / MIN_Q).log2()).exp2();
             if ratio >= 1.0 {
                 format!("×{ratio:.2}")
@@ -1677,6 +1737,83 @@ mod tests {
             Some(ModDestination::OscLevel(0))
         );
         assert_eq!(read_routes(&state, 0)[0], ModRoute::default());
+    }
+
+    #[test]
+    fn effects_chain_editor_adds_edits_pointer_reorders_removes_and_caps_at_32() {
+        use slint::ComponentHandle;
+        use slint::platform::software_renderer::PremultipliedRgbaColor;
+        use crate::plugin::effects::effect_ids;
+
+        truce_slint::platform::ensure_platform();
+        let window = truce_slint::platform::create_slint_window();
+        window.set_size(slint::PhysicalSize::new(1100, 1500));
+        let ui = SynthUi::new().unwrap();
+        let params = Arc::new(SynthParams::default());
+        let state = editor_test_context(params.clone());
+        let sync = setup_editor(state.clone(), ui.clone_strong());
+        sync(&state);
+        assert_eq!(ui.get_effects().row_count(), 1);
+        ui.invoke_effect_add();
+        sync(&state);
+        assert_eq!(params.effect_chain().slots(), &[0, 1]);
+        ui.invoke_effect_changed(1, 0, 0.2);
+        ui.invoke_effect_released(1, 0);
+        ui.invoke_mod_assign(ModDestination::EffectCutoff(1).index() as i32);
+        sync(&state);
+        assert_eq!(read_modulator_routes(&state, Modulator::Envelope(0))[1].destination,
+            Some(ModDestination::EffectCutoff(1)));
+        assert_eq!(ui.get_effects().row_data(1).unwrap().cutoff, 0.2);
+
+        ui.show().unwrap();
+        let mut pixels = vec![PremultipliedRgbaColor::default(); 1100 * 1500];
+        assert!(window.draw_if_needed(|renderer| { renderer.render(&mut pixels, 1100); }));
+        let top = (300..1200).find(|&y| {
+            let pixel = pixels[y * 1100 + 18];
+            (pixel.red, pixel.green, pixel.blue) == (52, 57, 67)
+        }).expect("visible effects card border");
+        let start = slint::LogicalPosition::new(50.0, top as f32 + 16.0);
+        let end = slint::LogicalPosition::new(410.0, top as f32 + 16.0);
+        ui.window().dispatch_event(slint::platform::WindowEvent::PointerPressed {
+            position: start,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(slint::platform::WindowEvent::PointerMoved { position: end });
+        ui.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: end,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        sync(&state);
+        assert_eq!(params.effect_chain().slots(), &[1, 0], "title drag must reorder actual cards");
+        assert_eq!(ui.get_effects().row_data(0).unwrap().slot, 1);
+        assert!((params.get_normalized(effect_ids(1)[1]).unwrap() - 0.2).abs() < 1e-6);
+        assert_eq!(read_modulator_routes(&state, Modulator::Envelope(0))[1].destination,
+            Some(ModDestination::EffectCutoff(1)));
+
+        ui.invoke_effect_remove(1);
+        sync(&state);
+        assert_eq!(read_modulator_routes(&state, Modulator::Envelope(0))[1], ModRoute::default());
+        ui.invoke_effect_remove(0);
+        sync(&state);
+        assert_eq!(ui.get_effects().row_count(), 0);
+        window.request_redraw();
+        assert!(window.draw_if_needed(|renderer| { renderer.render(&mut pixels, 1100); }));
+        for _ in 0..33 {
+            ui.invoke_effect_add();
+            sync(&state);
+        }
+        assert_eq!(ui.get_effects().row_count(), 32);
+        assert_eq!(params.effect_chain().slots(), &(0..32).collect::<Vec<_>>());
+        assert!((params.get_plain(effect_ids(1)[1]).unwrap() - 20_000.0).abs() < 1e-6);
+        window.request_redraw();
+        assert!(window.draw_if_needed(|renderer| { renderer.render(&mut pixels, 1100); }));
+        ui.invoke_effect_moved(31, 0);
+        sync(&state);
+        assert_eq!(params.effect_chain().slots()[0], 31);
+        ui.invoke_effect_remove(15);
+        sync(&state);
+        assert_eq!(ui.get_effects().row_count(), 31);
+        assert!(!params.effect_chain().slots().contains(&15));
     }
 
     fn editor_test_context(params: Arc<SynthParams>) -> PluginContext<SynthParams> {
@@ -2240,12 +2377,13 @@ mod tests {
         assert!(slots[1].amount_text.is_empty());
         assert_eq!(
             destination_to_normalized(Some(ModDestination::OscLevel(0))),
-            2.0 / 11.0
+            2.0 / (ModDestinationType::variant_count() - 1) as f64
         );
         assert_eq!(mod_target(3), Some(ModDestination::OscLevel(1)));
         assert_eq!(mod_target(9), Some(ModDestination::FilterQ));
         assert_eq!(mod_target(10), Some(ModDestination::FilterMix));
-        assert_eq!(mod_target(11), None);
+        assert_eq!(mod_target(11), Some(ModDestination::EffectCutoff(1)));
+        assert_eq!(mod_target(ModDestination::ALL.len() as i32), None);
         assert_eq!(mod_slot(-1), None);
     }
 
@@ -2310,7 +2448,7 @@ mod tests {
         assert_eq!(oscillator_parameter(0, 3), None);
         assert_eq!(
             destination_parameter(ModDestination::OscPitch(2)),
-            SynthParamsParamId::Osc3Pitch
+            u32::from(SynthParamsParamId::Osc3Pitch)
         );
         assert_eq!(oscillator_count_to_normalized(1), 0.0);
         assert_eq!(oscillator_count_to_normalized(4), 1.0);

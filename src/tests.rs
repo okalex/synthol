@@ -580,7 +580,10 @@ fn routing_slots_list_each_destination() {
         Some(ModDestination::OscLevel(0))
     );
     assert_eq!(mod_destination_from_index(4), Some(ModDestination::FilterQ));
-    for destination in ModDestination::ALL {
+    for destination in ModDestination::ALL
+        .into_iter()
+        .filter(|destination| destination.effect().is_none_or(|slot| slot == 0))
+    {
         let index = mod_destination_index(Some(destination));
         assert_eq!(mod_destination_from_index(index), Some(destination));
     }

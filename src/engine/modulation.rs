@@ -4,7 +4,7 @@
 //! the plugin's parameter ranges, which gives each destination a natural
 //! unit: semitones for pitch, octaves for cutoff, and a ratio for Q.
 
-use super::MAX_OSCILLATORS;
+use super::{MAX_EFFECTS, MAX_OSCILLATORS};
 use super::node::filter::{MAX_CUTOFF_HZ, MAX_Q, MIN_CUTOFF_HZ, MIN_Q};
 
 /// Number of routing slots per modulator.
@@ -24,13 +24,16 @@ pub enum ModDestination {
     FilterQ,
     /// Filter strength, 0 (bypass) to 1 (fully filtered).
     FilterMix,
+    EffectCutoff(usize),
+    EffectQ(usize),
+    EffectMix(usize),
 }
 
 impl ModDestination {
     /// Every destination: each oscillator's pitch and level in turn, then
-    /// the filter. `index` gives a destination's position here.
-    pub const ALL: [Self; 2 * MAX_OSCILLATORS + 3] = {
-        let mut all = [Self::FilterCutoff; 2 * MAX_OSCILLATORS + 3];
+    /// every effect's filter controls. `index` gives a destination's position here.
+    pub const ALL: [Self; 2 * MAX_OSCILLATORS + 3 * MAX_EFFECTS] = {
+        let mut all = [Self::FilterCutoff; 2 * MAX_OSCILLATORS + 3 * MAX_EFFECTS];
         let mut oscillator = 0;
         while oscillator < MAX_OSCILLATORS {
             all[2 * oscillator] = Self::OscPitch(oscillator);
@@ -39,10 +42,41 @@ impl ModDestination {
         }
         all[2 * MAX_OSCILLATORS + 1] = Self::FilterQ;
         all[2 * MAX_OSCILLATORS + 2] = Self::FilterMix;
+        let mut effect = 1;
+        while effect < MAX_EFFECTS {
+            all[2 * MAX_OSCILLATORS + 3 * effect] = Self::EffectCutoff(effect);
+            all[2 * MAX_OSCILLATORS + 3 * effect + 1] = Self::EffectQ(effect);
+            all[2 * MAX_OSCILLATORS + 3 * effect + 2] = Self::EffectMix(effect);
+            effect += 1;
+        }
         all
     };
 
-    /// Position in `ALL`. Oscillator indices must be below `MAX_OSCILLATORS`.
+    pub fn filter_destinations(slot: usize) -> [Self; 3] {
+        if slot == 0 {
+            [Self::FilterCutoff, Self::FilterQ, Self::FilterMix]
+        } else {
+            [Self::EffectCutoff(slot), Self::EffectQ(slot), Self::EffectMix(slot)]
+        }
+    }
+
+    pub fn with_effect(self, slot: usize) -> Self {
+        if self.effect().is_some() {
+            Self::filter_destinations(slot)[(self.index() - 2 * MAX_OSCILLATORS) % 3]
+        } else {
+            self
+        }
+    }
+
+    pub fn effect(self) -> Option<usize> {
+        match self {
+            Self::FilterCutoff | Self::FilterQ | Self::FilterMix => Some(0),
+            Self::EffectCutoff(slot) | Self::EffectQ(slot) | Self::EffectMix(slot) => Some(slot),
+            _ => None,
+        }
+    }
+
+    /// Position in `ALL`; indices must be within the oscillator/effect bounds.
     pub fn index(self) -> usize {
         match self {
             Self::OscPitch(oscillator) => 2 * oscillator,
@@ -50,6 +84,9 @@ impl ModDestination {
             Self::FilterCutoff => 2 * MAX_OSCILLATORS,
             Self::FilterQ => 2 * MAX_OSCILLATORS + 1,
             Self::FilterMix => 2 * MAX_OSCILLATORS + 2,
+            Self::EffectCutoff(slot) => 2 * MAX_OSCILLATORS + 3 * slot,
+            Self::EffectQ(slot) => 2 * MAX_OSCILLATORS + 3 * slot + 1,
+            Self::EffectMix(slot) => 2 * MAX_OSCILLATORS + 3 * slot + 2,
         }
     }
 
@@ -57,7 +94,7 @@ impl ModDestination {
     pub fn oscillator(self) -> Option<usize> {
         match self {
             Self::OscPitch(oscillator) | Self::OscLevel(oscillator) => Some(oscillator),
-            Self::FilterCutoff | Self::FilterQ | Self::FilterMix => None,
+            _ => None,
         }
     }
 
@@ -65,6 +102,7 @@ impl ModDestination {
     pub fn is_valid(self) -> bool {
         self.oscillator()
             .is_none_or(|oscillator| oscillator < MAX_OSCILLATORS)
+            && self.effect().is_none_or(|slot| slot < MAX_EFFECTS)
     }
 
     /// Where `value` (in the destination's units) sits across its control
@@ -72,11 +110,11 @@ impl ModDestination {
     pub fn normalize(self, value: f32) -> f32 {
         let normalized = match self {
             Self::OscPitch(_) => (value + MAX_PITCH_SEMITONES) / (2.0 * MAX_PITCH_SEMITONES),
-            Self::OscLevel(_) | Self::FilterMix => value,
-            Self::FilterCutoff => {
+            Self::OscLevel(_) | Self::FilterMix | Self::EffectMix(_) => value,
+            Self::FilterCutoff | Self::EffectCutoff(_) => {
                 (value / MIN_CUTOFF_HZ).ln() / (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).ln()
             }
-            Self::FilterQ => (value / MIN_Q).ln() / (MAX_Q / MIN_Q).ln(),
+            Self::FilterQ | Self::EffectQ(_) => (value / MIN_Q).ln() / (MAX_Q / MIN_Q).ln(),
         };
         if normalized.is_finite() {
             normalized.clamp(0.0, 1.0)
@@ -91,9 +129,11 @@ impl ModDestination {
         let normalized = normalized.clamp(0.0, 1.0);
         match self {
             Self::OscPitch(_) => (2.0 * normalized - 1.0) * MAX_PITCH_SEMITONES,
-            Self::OscLevel(_) | Self::FilterMix => normalized,
-            Self::FilterCutoff => MIN_CUTOFF_HZ * (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).powf(normalized),
-            Self::FilterQ => MIN_Q * (MAX_Q / MIN_Q).powf(normalized),
+            Self::OscLevel(_) | Self::FilterMix | Self::EffectMix(_) => normalized,
+            Self::FilterCutoff | Self::EffectCutoff(_) => {
+                MIN_CUTOFF_HZ * (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).powf(normalized)
+            }
+            Self::FilterQ | Self::EffectQ(_) => MIN_Q * (MAX_Q / MIN_Q).powf(normalized),
         }
     }
 
@@ -131,9 +171,14 @@ pub struct ModRoute {
 
 /// The total depth applied to each destination; routes sharing a
 /// destination add up.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModDepths([f32; ModDestination::ALL.len()]);
 
+impl Default for ModDepths {
+    fn default() -> Self {
+        Self([0.0; ModDestination::ALL.len()])
+    }
+}
 impl ModDepths {
     pub fn from_routes(routes: &[ModRoute]) -> Self {
         let mut depths = Self::default();
