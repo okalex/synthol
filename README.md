@@ -148,7 +148,15 @@ The Slint editor
 provides a reusable ADSR graph/knob panel for envelope modulators,
 an output-gain slider, a voice-count dropdown, and the oscillator, filter, and
 modulator controls. Attack, decay, and release each range from 0 ms to 10 s
-on a skewed taper that gives short times more of the knob. The controls use
+on a skewed taper that gives short times more of the knob. The envelope preview
+uses a fixed 0-30 second logarithmic time axis (`log(1 + time / 1 ms)`), with
+points at attack, attack + decay, and attack + decay + release. Release starts
+immediately after decay in the preview, without a sustain plateau; actual
+sustain still lasts until note-off. Short envelopes leave unused space on the
+right. At zero attack the peak aligns with the start, showing an instantaneous
+rise. Dragging the peak changes attack, dragging the middle point horizontally
+changes decay (vertically changes sustain), and dragging the endpoint changes
+release. The controls use
 Slint's software renderer and are drag-only. The editor passes keyboard
 events back to the host, so Ableton's computer MIDI keyboard remains available
 after clicking the editor. The exceptions are the patch dialogs: while the patch

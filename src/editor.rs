@@ -32,6 +32,17 @@ slint::include_modules!();
 
 const EDITOR_SIZE: (u32, u32) = (1100, 1100);
 
+const ENVELOPE_PLOT_MAX_MS: f32 = 30_000.0;
+
+// A 1 ms offset makes the logarithmic axis finite at instantaneous stages.
+fn envelope_time_position(milliseconds: f32) -> f32 {
+    milliseconds.clamp(0.0, ENVELOPE_PLOT_MAX_MS).ln_1p() / ENVELOPE_PLOT_MAX_MS.ln_1p()
+}
+
+fn envelope_position_time(position: f32) -> f32 {
+    (position.clamp(0.0, 1.0) * ENVELOPE_PLOT_MAX_MS.ln_1p()).exp_m1()
+}
+
 pub fn create(params: Arc<SynthParams>) -> Box<dyn Editor> {
     let keyboard = KeyboardCapture::new();
     let keyboard_for_setup = keyboard.clone();
@@ -59,6 +70,17 @@ fn setup_editor_with(
     library: PatchLibrary,
     keyboard: KeyboardCapture,
 ) -> SyncFn<SynthParams> {
+    let range = state.params().attack.info.range;
+    ui.global::<EnvelopeTimeScale>()
+        .on_duration(move |value| range.denormalize(f64::from(value.clamp(0.0, 1.0))) as f32);
+    ui.global::<EnvelopeTimeScale>()
+        .on_value(move |milliseconds| {
+            range.normalize(f64::from(milliseconds.clamp(0.0, 10_000.0))) as f32
+        });
+    ui.global::<EnvelopeTimeScale>()
+        .on_position(envelope_time_position);
+    ui.global::<EnvelopeTimeScale>()
+        .on_time(envelope_position_time);
     let patch_controller = Rc::new(RefCell::new(PatchController::new(library)));
     patches::wire(&ui, &state, &patch_controller);
     let pending_edits = Rc::new(RefCell::new(Vec::<(SynthParamsParamId, f64)>::new()));
@@ -1335,6 +1357,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn envelope_time_axis_is_zero_safe_logarithmic_and_invertible() {
+        assert_eq!(envelope_time_position(0.0), 0.0);
+        assert_eq!(envelope_position_time(0.0), 0.0);
+        assert_eq!(envelope_time_position(30_000.0), 1.0);
+        for time in [0.0, 1.0, 10.0, 100.0, 1000.0, 10_000.0, 30_000.0] {
+            let restored = envelope_position_time(envelope_time_position(time));
+            assert!((restored - time).abs() <= 0.00001 * time.max(1.0));
+        }
+        let decade_steps: Vec<_> = [10.0, 100.0, 1000.0, 10_000.0]
+            .windows(2)
+            .map(|times| envelope_time_position(times[1]) - envelope_time_position(times[0]))
+            .collect();
+        assert!((decade_steps[0] - decade_steps[2]).abs() < 0.01);
+        assert_eq!(envelope_time_position(-1.0), 0.0);
+        assert_eq!(envelope_time_position(40_000.0), 1.0);
+    }
+
+    #[test]
     fn envelope_knob_markers_match_level_multiplication_after_lfo_offsets() {
         let routes = [
             ModRoute {
@@ -1409,11 +1449,133 @@ mod tests {
                     .count()
                     >= 450
             })
-            .count();
+            .collect::<Vec<_>>();
         assert!(
-            dark_rows >= 140,
+            dark_rows.len() >= 140,
             "ENV 1 must display its ADSR plot in the Modulators column"
         );
+
+        let original_attack = state.get_param(ENV_PARAMS[0].adsr[0]);
+        let grid_columns = |y: usize| {
+            (570..1070)
+                .filter(|&x| {
+                    let pixel = pixels[y * 1100 + x];
+                    (pixel.red, pixel.green, pixel.blue) == (40, 44, 52)
+                })
+                .collect::<Vec<_>>()
+        };
+        let grid_rows: Vec<_> = (150..400)
+            .filter(|&y| grid_columns(y).len() >= 400)
+            .collect();
+        let plot_top = grid_rows[0];
+        let plot_bottom = *grid_rows.last().unwrap();
+        let top_columns = grid_columns(plot_top);
+        let plot_left = top_columns[0] as f32;
+        let plot_right = (top_columns.last().unwrap() + 1) as f32;
+        let plot_width = plot_right - plot_left;
+        for attack in [0.0, 0.251, 0.549, 1.0] {
+            ui.invoke_envelope_changed(0, attack);
+            ui.invoke_envelope_released(0);
+            sync(&state);
+            assert_eq!(ui.get_attack(), attack);
+            window.request_redraw();
+            assert!(window.draw_if_needed(|renderer| {
+                renderer.render(&mut pixels, 1100);
+            }));
+            let blue_columns = |y: usize| {
+                (570..1070)
+                    .filter(|&x| {
+                        let pixel = pixels[y * 1100 + x];
+                        (pixel.red, pixel.green, pixel.blue) == (86, 167, 255)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let peak_columns = blue_columns(plot_top);
+            let peak_center = (peak_columns[0] + peak_columns.last().unwrap()) as f32 / 2.0;
+            let attack_ms = params.attack.info.range.denormalize(f64::from(attack)) as f32;
+            let expected_peak = plot_left + envelope_time_position(attack_ms) * plot_width;
+            assert!(
+                (peak_center - expected_peak).abs() <= 1.5,
+                "attack peak must follow logarithmic time: {peak_center} vs {expected_peak}"
+            );
+            let endpoint_columns = blue_columns(plot_bottom);
+            let end = *endpoint_columns.last().unwrap();
+            let endpoint_start = endpoint_columns
+                .iter()
+                .rev()
+                .take_while(|&&x| end - x <= 12)
+                .last()
+                .unwrap();
+            let endpoint_center = (endpoint_start + end) as f32 / 2.0;
+            let total_ms = attack_ms + params.decay.value() + params.release.value();
+            let expected_end = plot_left + envelope_time_position(total_ms) * plot_width;
+            assert!(
+                (endpoint_center - expected_end).abs() <= 1.5,
+                "release endpoint must follow cumulative time: {endpoint_center} vs {expected_end}"
+            );
+            let decay_time = attack_ms + params.decay.value();
+            let expected_middle = plot_left + envelope_time_position(decay_time) * plot_width;
+            let sustain_y = (plot_bottom as f32
+                - ui.get_sustain_level() * (plot_bottom - plot_top) as f32)
+                .round() as usize;
+            let middle_columns: Vec<_> = blue_columns(sustain_y)
+                .into_iter()
+                .filter(|&x| (x as f32 - expected_middle).abs() <= 7.0)
+                .collect();
+            assert!(
+                middle_columns.len() >= 8,
+                "decay handle must be at attack + decay"
+            );
+            assert!(endpoint_center < plot_right - 10.0);
+        }
+        ui.invoke_envelope_changed(0, original_attack);
+        ui.invoke_envelope_released(0);
+        sync(&state);
+
+        for id in [0, 1, 3] {
+            let values = [
+                params.attack.value(),
+                params.decay.value(),
+                params.release.value(),
+            ];
+            let (offset, duration, y) = match id {
+                0 => (0.0, values[0], plot_top as f32),
+                1 => (
+                    values[0],
+                    values[1],
+                    plot_bottom as f32 - ui.get_sustain_level() * (plot_bottom - plot_top) as f32,
+                ),
+                3 => (values[0] + values[1], values[2], plot_bottom as f32),
+                _ => unreachable!(),
+            };
+            let original = state.get_param(ENV_PARAMS[0].adsr[id as usize]);
+            let position = envelope_time_position(offset + duration);
+            let start = slint::LogicalPosition::new(plot_left + position * plot_width, y);
+            let end = slint::LogicalPosition::new(start.x + 10.0, y);
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::PointerPressed {
+                    position: start,
+                    button: slint::platform::PointerEventButton::Left,
+                });
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::PointerMoved { position: end });
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+                    position: end,
+                    button: slint::platform::PointerEventButton::Left,
+                });
+            sync(&state);
+            let expected_ms = (envelope_position_time(position + 10.0 / plot_width) - offset)
+                .clamp(0.0, 10_000.0);
+            let expected_value = params.attack.info.range.normalize(f64::from(expected_ms)) as f32;
+            assert!(
+                (state.get_param(ENV_PARAMS[0].adsr[id as usize]) - expected_value).abs() < 0.002,
+                "dragging envelope point {id} must invert the logarithmic axis"
+            );
+            ui.invoke_envelope_changed(id, original);
+            ui.invoke_envelope_released(id);
+            sync(&state);
+        }
 
         for index in 1..MAX_ENVELOPES {
             ui.invoke_envelope_add();
