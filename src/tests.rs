@@ -731,6 +731,10 @@ fn routing_slots_list_each_destination() {
             "Osc 4 Pitch",
             "Osc 4 Level",
             "Filter Mix",
+            "Osc 1 Shape",
+            "Osc 2 Shape",
+            "Osc 3 Shape",
+            "Osc 4 Shape",
         ]
     );
     assert_eq!(mod_destination_from_index(0), None);
@@ -777,7 +781,7 @@ fn a_routed_lfo_modulates_the_sound() {
             .output[0]
             .clone()
     };
-    let osc_level = 2.0 / 11.0;
+    let osc_level = 2.0 / 15.0;
     // Amounts are normalized: 0.5 is 0 %, 0.0 is -100 %.
     let reference = render(0.0, 0.5);
     // A routed slot with no depth, or depth with no destination, is inert.
@@ -851,7 +855,7 @@ fn dynamic_lfos_round_trip_saved_parameter_values() {
         params.set_normalized(ids.rate.into(), 0.2 * index as f64);
         params.set_normalized(ids.mode.into(), (index % 2) as f64);
         for slot in 0..crate::engine::MOD_SLOTS {
-            params.set_normalized(ids.destinations[slot].into(), (slot + 1) as f64 / 11.0);
+            params.set_normalized(ids.destinations[slot].into(), (slot + 1) as f64 / 15.0);
             params.set_normalized(ids.amounts[slot].into(), 0.1 * (index + slot) as f64);
         }
     }
@@ -1153,11 +1157,11 @@ fn an_lfo_can_modulate_a_later_oscillator() {
     let energy = |samples: &[f32]| samples.iter().map(|s| s * s).sum::<f32>();
     let reference = render(0.0, 0.5);
     // Osc 2 Level keeps destination index 6.
-    let osc_2_level = 6.0 / 11.0;
+    let osc_2_level = 6.0 / 15.0;
     let modulated = render(osc_2_level, 0.0);
     assert!(energy(&modulated) < energy(&reference) * 0.8);
     // A route to an inactive oscillator (Osc 3 Level) changes nothing.
-    assert_eq!(render(8.0 / 11.0, 0.0), reference);
+    assert_eq!(render(8.0 / 15.0, 0.0), reference);
 }
 
 #[test]

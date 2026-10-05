@@ -14,6 +14,8 @@ export struct OscillatorRow {
     pitch-text: string,
     level: float,
     level-text: string,
+    shape: float,
+    shape-text: string,
     unison-voices: float,
     unison-detune: float,
     unison-width: float,
@@ -115,7 +117,7 @@ export component SynthUi inherits Window {
     in-out property <string> release-text: "1000.0 ms";
     in-out property <int> voices: 8;
     // The active oscillators; see `oscillator_row` in editor.rs.
-    in-out property <[OscillatorRow]> oscillators: [{ waveform: 0, phase: 0.0, phase-text: "0.0 °", pitch: 0.5, pitch-text: "+0.00 st", level: 1.0, level-text: "100 %", unison-voices: 0, unison-detune: 0, unison-width: 0 }];
+    in-out property <[OscillatorRow]> oscillators: [{ waveform: 0, phase: 0.0, phase-text: "0.0 °", pitch: 0.5, pitch-text: "+0.00 st", level: 1.0, level-text: "100 %", shape: 0.5, shape-text: "0 %", unison-voices: 0, unison-detune: 0, unison-width: 0 }];
     in property <int> max-oscillators: 4;
     // The oscillator tab the user picked; `current-oscillator` keeps it in
     // range while the oscillator list changes.
@@ -132,8 +134,10 @@ export component SynthUi inherits Window {
     callback voices-selected(int);
     // Oscillator callbacks take the oscillator's index first.
     callback oscillator-selected(int, int);
-    pure callback oscillator-cycle-path(int, float, float, float) -> string;
-    // Parameter id 0 is pitch, 1 is level, 2 is phase.
+    // Waveform, normalized shape and phase, then the plot's width and height.
+    pure callback oscillator-cycle-path(int, float, float, float, float) -> string;
+    // Parameter id 0 is pitch, 1 is level, 2 is phase, 3-5 are unison voices,
+    // detune and width, 6 is shape.
     callback osc-changed(int, int, float);
     callback osc-released(int, int);
     callback oscillator-add();
@@ -200,9 +204,11 @@ export component SynthUi inherits Window {
     pure callback lfo-shape-path(int, float, float, bool) -> string;
     // LFO routing. Knob destination indices follow `ModDestination::ALL`:
     // oscillator n's pitch is 2n and level 2n + 1, then cutoff and Q after
-    // the last oscillator's. Routing slot destinations index
-    // `mod-destinations`, which editor.rs fills.
+    // the last oscillator's, then every effect's filter controls, then
+    // oscillator n's shape at `shape-mod-target + n`. Routing slot
+    // destinations index `mod-destinations`, which editor.rs fills.
     in property <int> cutoff-mod-target: 2 * root.max-oscillators;
+    in property <int> shape-mod-target: 3 * root.max-oscillators + 3 * 32;
     in property <[string]> mod-destinations: ["None", "Osc 1 Pitch", "Osc 1 Level", "Filter Cutoff", "Filter Q", "Filter Mix"];
     in-out property <[ModRouteSlot]> mod-slots;
     // Per destination; see `knob_modulation` in editor.rs.
@@ -421,8 +427,9 @@ export component SynthUi inherits Window {
                                         height: 160px;
                                         waveform: root.current-osc.waveform;
                                         phase: root.current-osc.phase;
-                                        cycle-path(waveform, phase, width, height) => {
-                                            return root.oscillator-cycle-path(waveform, phase, width, height);
+                                        shape: root.current-osc.shape;
+                                        cycle-path(waveform, shape, phase, width, height) => {
+                                            return root.oscillator-cycle-path(waveform, shape, phase, width, height);
                                         }
                                     }
 
@@ -480,8 +487,27 @@ export component SynthUi inherits Window {
                                             mod-depth-released(target) => { root.mod-depth-released(target); }
                                         }
 
+                                        SynthKnob {
+                                            value: root.current-osc.shape;
+                                            label: "SHAPE";
+                                            height: 88px;
+                                            parameter-id: 6;
+                                            value-text: root.current-osc.shape-text;
+                                            mod-target: root.shape-mod-target + root.current-oscillator;
+                                            modulation: root.knob-mods[root.shape-mod-target + root.current-oscillator];
+                                            mod-drag-active: mod-handle.dragging;
+                                            mod-drag-x: mod-handle.pointer-x;
+                                            mod-drag-y: mod-handle.pointer-y;
+                                            mod-drop-count: mod-handle.drop-count;
+                                            mod-dropped(target) => { root.mod-assign(target); }
+                                            changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
+                                            released(id) => { root.osc-released(root.current-oscillator, id); }
+                                            mod-depth-changed(target, depth) => { root.mod-depth-changed(target, depth); }
+                                            mod-depth-released(target) => { root.mod-depth-released(target); }
+                                        }
+
                                         VerticalLayout {
-                                            width: 148px;
+                                            width: 132px;
                                             spacing: 3px;
                                             alignment: start;
                                             Text {
@@ -740,7 +766,7 @@ export component SynthUi inherits Window {
                                         }
 
                                         Text {
-                                            text: "Drag onto PITCH, LEVEL, CUTOFF, Q or MIX\nAlt-drag for depth · Shift for fine";
+                                            text: "Drag onto PITCH, LEVEL, SHAPE, CUTOFF, Q or MIX\nAlt-drag for depth · Shift for fine";
                                             font-size: 9px;
                                             color: #6f7685;
                                         }

@@ -176,7 +176,9 @@ typed control inputs or parameter modulation destinations. Define modulation
 combination rules deliberately (for example, additive offsets versus
 multiplicative scaling) and clamp/convert values at the destination's
 parameter domain. Do not make modulation mutate the saved base value of a
-parameter.
+parameter. Saved routes store `ModDestination` and `ModDestinationType`
+indices, so append new destinations (as the oscillator shape destinations
+are) instead of inserting them.
 
 The engine owns a fixed pool of `MAX_VOICES` (8) voices in
 `engine/voice.rs`, allocated up front so note handling never allocates on the

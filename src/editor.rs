@@ -248,9 +248,10 @@ fn setup_editor_with(
         remove_oscillator(&state_for_ui, &pending_edits_for_ui, removed);
     });
 
-    ui.on_oscillator_cycle_path(|index, phase, width, height| {
+    ui.on_oscillator_cycle_path(|index, shape, phase, width, height| {
         let waveform = oscillator_from_index(index);
-        slint::SharedString::from(waveform_cycle_path(waveform, phase, width, height))
+        let shape = 2.0 * shape - 1.0;
+        slint::SharedString::from(waveform_cycle_path(waveform, shape, phase, width, height))
     });
 
     let pending_edits_for_ui = pending_edits.clone();
@@ -608,6 +609,7 @@ fn setup_editor_with(
         ModDestination::ALL.len()
     ]));
     ui.set_knob_mods(slint::ModelRc::from(knob_mod_model.clone()));
+    ui.set_shape_mod_target(ModDestination::OscShape(0).index() as i32);
     let oscillator_model = Rc::new(slint::VecModel::from(vec![OscillatorRow::default()]));
     ui.set_oscillators(slint::ModelRc::from(oscillator_model.clone()));
     let destination_model = Rc::new(slint::VecModel::from(destination_options(1)));
@@ -775,6 +777,8 @@ fn oscillator_row(
         pitch_text: state.format_param(params.pitch).into(),
         level: state.get_param(params.level),
         level_text: state.format_param(params.level).into(),
+        shape: state.get_param(params.shape),
+        shape_text: state.format_param(params.shape).into(),
         unison_voices: state.get_param(params.unison_voices),
         unison_detune: state.get_param(params.unison_detune),
         unison_width: state.get_param(params.unison_width),
@@ -970,6 +974,9 @@ fn routes_after_removal(routes: &[ModRoute; MOD_SLOTS], removed: usize) -> [ModR
             Some(ModDestination::OscLevel(index)) if index > removed => {
                 Some(ModDestination::OscLevel(index - 1))
             }
+            Some(ModDestination::OscShape(index)) if index > removed => {
+                Some(ModDestination::OscShape(index - 1))
+            }
             destination => destination,
         };
         ModRoute {
@@ -1014,12 +1021,18 @@ fn oscillator_from_index(index: i32) -> Waveform {
 /// Segments per drawn cycle; enough that band-limited edges look vertical.
 const CYCLE_PATH_SEGMENTS: usize = 256;
 
-/// SVG path commands tracing one cycle of `waveform`, starting at normalized
-/// `start_phase`, across a `width` by `height` box: 0 degrees after the start
-/// on the left, 360 on the right, +1 at the top.
-fn waveform_cycle_path(waveform: Waveform, start_phase: f32, width: f32, height: f32) -> String {
+/// SVG path commands tracing one cycle of `waveform` at `shape` (-1 to 1),
+/// starting at normalized `start_phase`, across a `width` by `height` box: 0
+/// degrees after the start on the left, 360 on the right, +1 at the top.
+fn waveform_cycle_path(
+    waveform: Waveform,
+    shape: f32,
+    start_phase: f32,
+    width: f32,
+    height: f32,
+) -> String {
     let mut samples = [0.0_f32; CYCLE_PATH_SEGMENTS + 1];
-    render_cycle(waveform, start_phase, &mut samples);
+    render_cycle(waveform, shape, start_phase, &mut samples);
     cycle_samples_path(&samples, width, height)
 }
 
@@ -1327,7 +1340,8 @@ fn oscillator_params(oscillator: i32) -> Option<&'static crate::plugin::Oscillat
         .and_then(|index| OSCILLATOR_PARAMS.get(index))
 }
 
-/// Oscillator controls: pitch, level, phase, unison voices, detune, width.
+/// Oscillator controls: pitch, level, phase, unison voices, detune, width,
+/// shape.
 fn oscillator_parameter(oscillator: i32, id: i32) -> Option<SynthParamsParamId> {
     let params = oscillator_params(oscillator)?;
     match id {
@@ -1337,6 +1351,7 @@ fn oscillator_parameter(oscillator: i32, id: i32) -> Option<SynthParamsParamId> 
         3 => Some(params.unison_voices),
         4 => Some(params.unison_detune),
         5 => Some(params.unison_width),
+        6 => Some(params.shape),
         _ => None,
     }
 }
@@ -1349,6 +1364,9 @@ fn destination_parameter(destination: ModDestination) -> u32 {
             .into(),
         ModDestination::OscLevel(index) => OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)]
             .level
+            .into(),
+        ModDestination::OscShape(index) => OSCILLATOR_PARAMS[index.min(MAX_OSCILLATORS - 1)]
+            .shape
             .into(),
         destination => {
             let slot = destination.effect().expect("filter destination");
@@ -1370,7 +1388,7 @@ fn shown_oscillators(count: usize, routes: &[ModRoute]) -> usize {
 }
 
 /// The routing dropdown's choices for `oscillators` oscillators: None, each
-/// oscillator's pitch and level, then the filter.
+/// oscillator's pitch, level and shape, then the filter.
 fn destination_options(oscillators: usize) -> Vec<slint::SharedString> {
     std::iter::once(None)
         .chain(dropdown_destinations(oscillators).map(Some))
@@ -1384,6 +1402,7 @@ fn dropdown_destinations(oscillators: usize) -> impl Iterator<Item = ModDestinat
             [
                 ModDestination::OscPitch(index),
                 ModDestination::OscLevel(index),
+                ModDestination::OscShape(index),
             ]
         })
         .chain(ModDestination::filter_destinations(0))
@@ -1407,6 +1426,7 @@ fn routing_choices(params: &SynthParams, routes: &[ModRoute]) -> Vec<Option<ModD
         [
             Some(ModDestination::OscPitch(index)),
             Some(ModDestination::OscLevel(index)),
+            Some(ModDestination::OscShape(index)),
         ]
     }));
     let chain = params.effect_chain();
@@ -1516,11 +1536,12 @@ fn amount_to_normalized(amount: f32) -> f64 {
     ((f64::from(amount) + 1.0) / 2.0).clamp(0.0, 1.0)
 }
 
-/// Depth given to a new route: a semitone, a quarter of the level, an
-/// octave of cutoff or a doubling of Q.
+/// Depth given to a new route: a semitone, a quarter of the level or shape
+/// range, an octave of cutoff or a doubling of Q.
 fn default_mod_amount(destination: ModDestination) -> f32 {
     match destination {
         ModDestination::OscPitch(_) => 1.0 / (2.0 * MAX_PITCH_SEMITONES),
+        ModDestination::OscShape(_) => 0.25,
         ModDestination::OscLevel(_) | ModDestination::FilterMix | ModDestination::EffectMix(_) => {
             0.25
         }
@@ -1538,6 +1559,8 @@ fn format_mod_amount(destination: ModDestination, amount: f32) -> String {
         ModDestination::OscPitch(_) => {
             format!("{:+.2} st", amount * 2.0 * MAX_PITCH_SEMITONES)
         }
+        // The shape knob spans -100 % to 100 %.
+        ModDestination::OscShape(_) => format!("{:+.0} %", amount * 200.0),
         ModDestination::OscLevel(_) | ModDestination::FilterMix | ModDestination::EffectMix(_) => {
             format!("{:+.0} %", amount * 100.0)
         }
@@ -2386,7 +2409,7 @@ mod tests {
             "plots must align in two columns"
         );
         let plot_bottom = *oscillator_plot.last().unwrap();
-        for x in [110, 202, 294, 820] {
+        for x in [72, 164, 256, 348, 820] {
             assert_eq!(
                 pixel_at(&active_pixels, x, plot_bottom + 52),
                 (41, 45, 54),
@@ -2483,7 +2506,7 @@ mod tests {
         assert_eq!(ui.get_lfo_shape(), 0);
         assert_eq!(ui.get_lfo_mode(), 0);
         assert_eq!(read_routes(&state, 0), [ModRoute::default(); MOD_SLOTS]);
-        ui.invoke_mod_destination_selected(2, 3);
+        ui.invoke_mod_destination_selected(2, 4);
         sync(&state);
         assert_eq!(
             read_routes(&state, 0)[2].destination,
@@ -2597,7 +2620,7 @@ mod tests {
 
     #[test]
     fn cycle_path_spans_the_box_from_0_to_360_degrees() {
-        let commands = waveform_cycle_path(Waveform::Sine, 0.0, 200.0, 50.0);
+        let commands = waveform_cycle_path(Waveform::Sine, 0.0, 0.0, 200.0, 50.0);
         assert!(commands.starts_with('M'));
         let points = points(&commands);
         assert_eq!(points.len(), CYCLE_PATH_SEGMENTS + 1);
@@ -2613,7 +2636,7 @@ mod tests {
     #[test]
     fn cycle_path_follows_the_selected_oscillator() {
         let paths: Vec<_> = (0..OscillatorType::variant_count() as i32)
-            .map(|index| waveform_cycle_path(oscillator_from_index(index), 0.0, 100.0, 40.0))
+            .map(|index| waveform_cycle_path(oscillator_from_index(index), 0.0, 0.0, 100.0, 40.0))
             .collect();
         for (index, path) in paths.iter().enumerate() {
             assert!(!paths[index + 1..].contains(path));
@@ -2918,15 +2941,17 @@ mod tests {
                 "None",
                 "Osc 1 Pitch",
                 "Osc 1 Level",
+                "Osc 1 Shape",
                 "Filter Cutoff",
                 "Filter Q",
                 "Filter Mix"
             ]
         );
         let options = destination_options(3);
-        assert_eq!(options.len(), 10);
-        assert_eq!(options[5], "Osc 3 Pitch");
-        assert_eq!(options[7], "Filter Cutoff");
+        assert_eq!(options.len(), 13);
+        assert_eq!(options[7], "Osc 3 Pitch");
+        assert_eq!(options[9], "Osc 3 Shape");
+        assert_eq!(options[10], "Filter Cutoff");
 
         for oscillators in 1..=MAX_OSCILLATORS {
             for index in 0..destination_options(oscillators).len() as i32 {
@@ -2936,11 +2961,15 @@ mod tests {
         }
         assert_eq!(destination_from_option(2, 0), None);
         assert_eq!(
-            destination_from_option(2, 4),
+            destination_from_option(2, 5),
             Some(ModDestination::OscLevel(1))
         );
         assert_eq!(
-            destination_from_option(2, 5),
+            destination_from_option(2, 6),
+            Some(ModDestination::OscShape(1))
+        );
+        assert_eq!(
+            destination_from_option(2, 7),
             Some(ModDestination::FilterCutoff)
         );
         assert_eq!(destination_from_option(2, 99), None);
@@ -2980,7 +3009,11 @@ mod tests {
             oscillator_parameter(3, 5),
             Some(SynthParamsParamId::Osc4UnisonWidth)
         );
-        assert_eq!(oscillator_parameter(0, 6), None);
+        assert_eq!(
+            oscillator_parameter(2, 6),
+            Some(SynthParamsParamId::Osc3Shape)
+        );
+        assert_eq!(oscillator_parameter(0, 7), None);
         assert_eq!(
             destination_parameter(ModDestination::OscPitch(2)),
             u32::from(SynthParamsParamId::Osc3Pitch)
@@ -3030,7 +3063,7 @@ mod tests {
 
     #[test]
     fn cycle_path_starts_at_the_start_phase() {
-        let points = points(&waveform_cycle_path(Waveform::Sine, 0.25, 200.0, 50.0));
+        let points = points(&waveform_cycle_path(Waveform::Sine, 0.0, 0.25, 200.0, 50.0));
         // A sine started at 90 degrees begins at its peak and ends there.
         assert!(points[0].1.abs() < 0.01);
         assert!(points[CYCLE_PATH_SEGMENTS / 2].1 - 50.0 < 0.01);

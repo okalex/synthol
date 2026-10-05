@@ -429,7 +429,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(ModDestinationType::variant_count(), 12);
+        assert_eq!(ModDestinationType::variant_count(), 16);
     }
 
     #[test]
@@ -440,7 +440,7 @@ mod tests {
             params.set_plain(ids.filters[0].into(), 31.0);
             assert_eq!(
                 params.get_normalized(ids.destinations[0].into()),
-                Some(3.0 / 11.0)
+                Some(3.0 / 15.0)
             );
         }
         for ids in crate::plugin::ENV_PARAMS {
@@ -448,7 +448,7 @@ mod tests {
             params.set_plain(ids.filters[0].into(), 31.0);
             assert_eq!(
                 params.get_normalized(ids.destinations[0].into()),
-                Some(4.0 / 11.0)
+                Some(4.0 / 15.0)
             );
         }
         for routes in params.mod_routes() {

@@ -18,8 +18,8 @@ another (up to four) and opens its tab; each tab's × button removes that
 oscillator (the last one can't be removed), and later oscillators move up to
 fill the gap. The number
 of oscillators is the host-automatable **Oscillators** parameter, and each
-oscillator has its own host-automatable type, phase, pitch, and level
-parameters ("Osc 1 Type" through "Osc 4 Level"). Every voice plays all active
+oscillator has its own host-automatable type, phase, pitch, level, and shape
+parameters ("Osc 1 Type" through "Osc 4 Shape"). Every voice plays all active
 oscillators on its note and sums them, unnormalized, before the filter, so
 several oscillators at full level can exceed 0 dBFS; lower their levels if
 needed.
@@ -53,10 +53,28 @@ sets where in the cycle each new note starts; sounding notes are unaffected.
 Phases other than 0° start mid-cycle, so short attacks may click. A **Pitch**
 knob transposes that oscillator by ±24 semitones and a **Level** knob (0% to
 100%) sets its volume before the filter; both are host-automatable and
-smoothed. Below the
+smoothed. A bipolar **Shape** knob (-100% to 100%, default 0%, also
+host-automatable and smoothed) bends the waveform; at 0% every type is
+unchanged:
+
+- **Sine** and **Triangle** lean: turning left shortens the rise and
+  lengthens the fall until, fully left, the wave is a rounded (or, for
+  triangle, straight) falling saw; turning right does the reverse, ending at
+  a rising saw. Sine keeps its rounded peaks throughout.
+- **Square** sets the duty cycle: left narrows the high part down to an
+  upward pulse, right narrows the low part down to a downward pulse. The
+  levels shift so the wave has no DC offset and still peaks at full scale,
+  so an extreme pulse sits just off zero between pulses.
+- **Sawtooth** squeezes one saw cycle into a shorter part of the cycle by
+  the knob's distance from center and fills the rest with silence: left
+  moves the squeezed saw to the start of the cycle, right to the end.
+
+At the extremes each segment keeps at least 2% of the cycle (and a few
+samples at high pitches) so pulses and ramps stay audible and limit
+aliasing. Below the
 dropdown, a waveform display plots one cycle (0° to 360°) of the selected
-shape as it plays from the chosen start phase, updating live while the knob
-turns. It is computed from the oscillator's own sample function rather than
+shape as it plays from the chosen start phase and Shape setting, updating
+live while the knobs turn (it shows the knob's value, not modulation). It is computed from the oscillator's own sample function rather than
 drawn by hand.
 
 To the right of each oscillator's knobs, **Unison** provides three
@@ -74,7 +92,7 @@ decrease it; hold Shift for finer adjustment:
 
 The unison mix is averaged to avoid multiplying the oscillator's level by
 its voice count. Each subvoice starts at the Phase knob's position and
-shares the oscillator's waveform, pitch/level modulation, and note gate.
+shares the oscillator's waveform, pitch/level/shape modulation, and note gate.
 Stereo is preserved through every filter; mono output folds down the two
 channels. All three controls are host-automatable and saved in patches and
 host sessions. Older patches default to one unison voice.
@@ -141,7 +159,7 @@ recently pressed note's line is solid and older notes' lines are faint (up to
 one per voice). Because the position comes from audio processing, a
 Sync LFO only advances while the host is processing the plugin.
 
-Each modulator can modulate any oscillator's **Pitch** and **Level** and any filter's
+Each modulator can modulate any oscillator's **Pitch**, **Level**, and **Shape** and any filter's
 **Cutoff**, **Q**, and **Mix**. Drag the amber **MOD** handle from the Routing row onto one of
 those knobs (they light up while you drag) to route the selected modulator to it; to target
 another oscillator, select its tab first. A routed
@@ -152,13 +170,14 @@ routed knob up or down to change the depth without touching the knob's value;
 hold Shift for fine control. The routing list below the handle shows the four
 routing slots, each a host-automatable **Destination** and bipolar **Amount**
 (-100% to 100% of the destination's knob range). Each slot has a destination
-dropdown (listing the pitch and level of every active oscillator), an amount slider (Shift-drag for fine control, double-click to reset),
+dropdown (listing the pitch, level, and shape of every active oscillator), an amount slider (Shift-drag for fine control, double-click to reset),
 the depth in the destination's units, and a × button that clears the slot.
 The selected Modulators tab determines which LFO or envelope the handle, routing list,
 and Alt-drag depth edits control. Arcs show its depth, with envelopes showing
 a one-sided range rather than a bipolar LFO swing; the live dot includes
 LFO and envelope modulation. A new envelope-to-level route starts at 100%. A
-new route starts at a modest depth: 1 semitone, 25% level, 1 octave of cutoff,
+new route starts at a modest depth: 1 semitone, 25% level, 50 percentage
+points of shape, 1 octave of cutoff,
 ×2 Q, or 25 percentage points of Mix. The amounts are measured along each knob's own taper, so pitch moves
 in semitones, cutoff in octaves, and Q multiplicatively (shown as ×/÷).
 Modulated values stay within each knob's range, and several slots targeting the

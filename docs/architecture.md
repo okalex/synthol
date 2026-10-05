@@ -229,6 +229,19 @@ The oscillator also has a pitch offset in semitones (cached as a frequency
 ratio) and a 0-1 output level, applied per sample from the smoothed `Osc Pitch`
 and `Osc Level` parameters.
 
+A bipolar shape (-1 to 1, from the smoothed `Osc Shape` parameter's
+-100%..100%) bends each waveform in `waveform_sample`. Shape 0 takes the
+original `plain_waveform_sample` path, so unshaped output is bit-for-bit
+unchanged. Sine and triangle split the cycle into a rise and fall whose ratio
+follows the shape (half-cosine or linear segments), ending at falling and
+rising saws. Square uses the shape as its duty cycle, with DC-free levels
+scaled so the larger one is full scale and PolyBLEP steps scaled to the jump.
+Sawtooth plays the plain PolyBLEP saw inside a window `1 - |shape|` of the
+cycle wide, at the start for negative shapes and the end for positive ones,
+and outputs zero outside it. Extreme segments are limited to `MIN_SEGMENT`
+(2% of the cycle) or a few samples at high pitches to bound aliasing.
+`render_cycle` takes the same shape so the editor's display matches.
+
 Each oscillator preallocates 20 independent phases for unison. Its
 `UnisonSettings` selects 1-20 subvoices, a symmetric pitch spread
 (0-50 cents), and stereo width (0-1). Subvoices share the oscillator's
@@ -265,9 +278,9 @@ meter slots `lfo_position_0` to `lfo_position_7` (encoded as `1 + phase`, with
 Meter slots are display-only and not saved with presets.
 
 Modulation (`engine/modulation.rs`) works in normalized knob space. Each
-`ModDestination` (oscillator pitch and level, filter cutoff and Q) maps its
+`ModDestination` (oscillator pitch, level, and shape, filter cutoff and Q) maps its
 value to and from 0-1 along the same taper as its host parameter: linear for
-pitch and level, logarithmic for cutoff and Q. The plugin exposes `MOD_SLOTS`
+pitch, level, and shape, logarithmic for cutoff and Q. The plugin exposes `MOD_SLOTS`
 (4) routing slots as `LFO Route N Destination` and `LFO Route N Amount`
 parameters. Every sample, `SynthEngine::set_modulation` sums the slots' bipolar
 amounts per destination into `ModDepths`, and the engine passes the base
@@ -277,6 +290,12 @@ destination's normalized value by `depth * lfo` and clamps it to the range. A
 zero offset leaves a value bit-for-bit unchanged, so unrouted settings cost
 nothing extra and sound the same as before. Voice LFOs keep running in Sync
 mode for display, but only the shared value modulates.
+
+`ModDestination::ALL` and the host-visible `ModDestinationType` enum are
+indexed by position, and saved routes store those indices, so new
+destinations are appended: the `OscShape` destinations come after every
+effect destination (`SHAPE_BASE`), and `Osc N Shape` after `Filter Mix` in the
+host enum.
 
 The editor reads the routing parameters each frame. It draws each routed
 knob's depth arc and, from the newest LFO position, its live modulated value.

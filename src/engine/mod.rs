@@ -37,6 +37,9 @@ pub struct OscillatorSettings {
     pub pitch: f32,
     /// Gain (`0.0..=1.0`), before modulation.
     pub level: f32,
+    /// Waveform shape (`-1.0..=1.0`, 0 for the plain waveform), before
+    /// modulation.
+    pub shape: f32,
     pub unison: UnisonSettings,
 }
 
@@ -47,6 +50,7 @@ impl Default for OscillatorSettings {
             start_phase: 0.0,
             pitch: 0.0,
             level: 1.0,
+            shape: 0.0,
             unison: UnisonSettings::default(),
         }
     }
@@ -193,6 +197,7 @@ impl SynthEngine {
         self.set_start_phase(index, settings.start_phase);
         self.set_oscillator_pitch(index, settings.pitch);
         self.set_oscillator_level(index, settings.level);
+        self.set_oscillator_shape(index, settings.shape);
         self.set_oscillator_unison(index, settings.unison);
     }
 
@@ -213,6 +218,14 @@ impl SynthEngine {
     pub fn set_oscillator_level(&mut self, index: usize, level: f32) {
         if let Some(oscillator) = self.oscillators.get_mut(index) {
             oscillator.level = level;
+        }
+    }
+
+    /// Set oscillator `index`'s waveform shape (`-1.0..=1.0`), before
+    /// modulation.
+    pub fn set_oscillator_shape(&mut self, index: usize, shape: f32) {
+        if let Some(oscillator) = self.oscillators.get_mut(index) {
+            oscillator.shape = shape;
         }
     }
 
@@ -1254,6 +1267,49 @@ mod tests {
             .iter()
             .fold(0.0_f32, |peak, s| peak.max(s.abs()));
         assert!(peak > 0.99, "{peak}");
+    }
+
+    fn positive_fraction(samples: &[f32]) -> f32 {
+        samples.iter().filter(|&&sample| sample > 0.0).count() as f32 / samples.len() as f32
+    }
+
+    #[test]
+    fn lfo_modulates_the_oscillator_shape() {
+        // A square LFO swings the square's shape by half its range either
+        // way: a 25% duty cycle for the first half-second, 75% for the next.
+        let mut engine = modulated_engine(
+            super::LfoMode::Trigger,
+            &[route(ModDestination::OscShape(0), -0.25)],
+        );
+        engine.set_waveform(0, super::Waveform::Square);
+        note_on(&mut engine, 69);
+        let samples = render(&mut engine, 48_000);
+        let narrow = positive_fraction(&samples[4_800..19_200]);
+        let wide = positive_fraction(&samples[28_800..43_200]);
+        assert!((narrow - 0.25).abs() < 0.03, "{narrow}");
+        assert!((wide - 0.75).abs() < 0.03, "{wide}");
+    }
+
+    #[test]
+    fn envelopes_modulate_the_oscillator_shape() {
+        let mut engine = modulated_engine(super::LfoMode::Trigger, &[]);
+        engine.set_waveform(0, super::Waveform::Square);
+        engine.set_oscillator_shape(0, -0.5);
+        engine.set_envelope_count(1);
+        engine.set_envelope(
+            0,
+            super::AdsrSettings {
+                attack: std::time::Duration::ZERO,
+                decay: std::time::Duration::ZERO,
+                sustain_db: 0.0,
+                release: std::time::Duration::ZERO,
+            },
+        );
+        // A full envelope lifts the shape by half its range, from -0.5 to 0.5.
+        engine.set_envelope_modulation(0, &[route(ModDestination::OscShape(0), 0.5)]);
+        note_on(&mut engine, 69);
+        let wide = positive_fraction(&render(&mut engine, 4_800)[480..]);
+        assert!((wide - 0.75).abs() < 0.03, "{wide}");
     }
 
     #[test]

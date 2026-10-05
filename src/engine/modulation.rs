@@ -12,12 +12,17 @@ pub const MOD_SLOTS: usize = 4;
 /// The oscillator pitch control spans this many semitones either way.
 pub const MAX_PITCH_SEMITONES: f32 = 24.0;
 
+/// Where the oscillator shape destinations start in `ModDestination::ALL`.
+const SHAPE_BASE: usize = 2 * MAX_OSCILLATORS + 3 * MAX_EFFECTS;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModDestination {
     /// An oscillator's pitch in semitones, by oscillator index.
     OscPitch(usize),
     /// An oscillator's level as linear gain, 0 to 1, by oscillator index.
     OscLevel(usize),
+    /// An oscillator's waveform shape, -1 to 1, by oscillator index.
+    OscShape(usize),
     /// Filter cutoff in Hz, on a log scale.
     FilterCutoff,
     /// Filter Q, on a log scale.
@@ -31,9 +36,11 @@ pub enum ModDestination {
 
 impl ModDestination {
     /// Every destination: each oscillator's pitch and level in turn, then
-    /// every effect's filter controls. `index` gives a destination's position here.
-    pub const ALL: [Self; 2 * MAX_OSCILLATORS + 3 * MAX_EFFECTS] = {
-        let mut all = [Self::FilterCutoff; 2 * MAX_OSCILLATORS + 3 * MAX_EFFECTS];
+    /// every effect's filter controls, then each oscillator's shape (added
+    /// later, so earlier positions stay put). `index` gives a destination's
+    /// position here.
+    pub const ALL: [Self; 3 * MAX_OSCILLATORS + 3 * MAX_EFFECTS] = {
+        let mut all = [Self::FilterCutoff; 3 * MAX_OSCILLATORS + 3 * MAX_EFFECTS];
         let mut oscillator = 0;
         while oscillator < MAX_OSCILLATORS {
             all[2 * oscillator] = Self::OscPitch(oscillator);
@@ -48,6 +55,11 @@ impl ModDestination {
             all[2 * MAX_OSCILLATORS + 3 * effect + 1] = Self::EffectQ(effect);
             all[2 * MAX_OSCILLATORS + 3 * effect + 2] = Self::EffectMix(effect);
             effect += 1;
+        }
+        let mut oscillator = 0;
+        while oscillator < MAX_OSCILLATORS {
+            all[SHAPE_BASE + oscillator] = Self::OscShape(oscillator);
+            oscillator += 1;
         }
         all
     };
@@ -91,13 +103,16 @@ impl ModDestination {
             Self::EffectCutoff(slot) => 2 * MAX_OSCILLATORS + 3 * slot,
             Self::EffectQ(slot) => 2 * MAX_OSCILLATORS + 3 * slot + 1,
             Self::EffectMix(slot) => 2 * MAX_OSCILLATORS + 3 * slot + 2,
+            Self::OscShape(oscillator) => SHAPE_BASE + oscillator,
         }
     }
 
     /// The oscillator this destination belongs to, if any.
     pub fn oscillator(self) -> Option<usize> {
         match self {
-            Self::OscPitch(oscillator) | Self::OscLevel(oscillator) => Some(oscillator),
+            Self::OscPitch(oscillator)
+            | Self::OscLevel(oscillator)
+            | Self::OscShape(oscillator) => Some(oscillator),
             _ => None,
         }
     }
@@ -114,6 +129,7 @@ impl ModDestination {
     pub fn normalize(self, value: f32) -> f32 {
         let normalized = match self {
             Self::OscPitch(_) => (value + MAX_PITCH_SEMITONES) / (2.0 * MAX_PITCH_SEMITONES),
+            Self::OscShape(_) => (value + 1.0) / 2.0,
             Self::OscLevel(_) | Self::FilterMix | Self::EffectMix(_) => value,
             Self::FilterCutoff | Self::EffectCutoff(_) => {
                 (value / MIN_CUTOFF_HZ).ln() / (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).ln()
@@ -133,6 +149,7 @@ impl ModDestination {
         let normalized = normalized.clamp(0.0, 1.0);
         match self {
             Self::OscPitch(_) => (2.0 * normalized - 1.0) * MAX_PITCH_SEMITONES,
+            Self::OscShape(_) => 2.0 * normalized - 1.0,
             Self::OscLevel(_) | Self::FilterMix | Self::EffectMix(_) => normalized,
             Self::FilterCutoff | Self::EffectCutoff(_) => {
                 MIN_CUTOFF_HZ * (MAX_CUTOFF_HZ / MIN_CUTOFF_HZ).powf(normalized)
@@ -250,6 +267,14 @@ mod tests {
         assert!((cutoff - 2_000.0).abs() < 0.5);
         let level = ModDestination::OscLevel(0).modulate(0.5, -0.25);
         assert!((level - 0.25).abs() < 1e-6);
+        // Shape spans -1 to 1, so a quarter of the range moves it by 0.5.
+        let shape = ModDestination::OscShape(0).modulate(0.0, 0.25);
+        assert!((shape - 0.5).abs() < 1e-6);
+        assert_eq!(ModDestination::OscShape(0).modulate(0.8, 0.5), 1.0);
+        assert_eq!(
+            ModDestination::OscShape(0).modulate_envelope(-1.0, 1.0, 0.5),
+            0.0
+        );
     }
 
     #[test]
@@ -295,6 +320,13 @@ mod tests {
         assert_eq!(ModDestination::ALL[2], ModDestination::OscPitch(1));
         assert_eq!(ModDestination::OscLevel(3).oscillator(), Some(3));
         assert_eq!(ModDestination::FilterQ.oscillator(), None);
+        assert_eq!(ModDestination::OscShape(2).oscillator(), Some(2));
+        // Shapes come after every earlier destination, keeping their indices.
+        assert_eq!(ModDestination::FilterCutoff.index(), 2 * MAX_OSCILLATORS);
+        assert_eq!(
+            ModDestination::OscShape(0).index(),
+            2 * MAX_OSCILLATORS + 3 * MAX_EFFECTS
+        );
 
         let depths = ModDepths::from_routes(&[ModRoute {
             destination: Some(ModDestination::OscPitch(2)),

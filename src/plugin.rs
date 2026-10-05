@@ -88,8 +88,9 @@ impl From<LfoModeType> for LfoMode {
     }
 }
 
-/// Where a modulator routing slot sends its source. Oscillators after the first
-/// come last so sessions saved before they existed keep their routes.
+/// Where a modulator routing slot sends its source. Destinations added later
+/// (other oscillators, filter mix, shapes) come last so sessions saved before
+/// they existed keep their routes.
 #[derive(ParamEnum)]
 pub enum ModDestinationType {
     None,
@@ -115,6 +116,14 @@ pub enum ModDestinationType {
     Osc4Level,
     #[name = "Filter Mix"]
     FilterMix,
+    #[name = "Osc 1 Shape"]
+    Osc1Shape,
+    #[name = "Osc 2 Shape"]
+    Osc2Shape,
+    #[name = "Osc 3 Shape"]
+    Osc3Shape,
+    #[name = "Osc 4 Shape"]
+    Osc4Shape,
 }
 
 impl From<ModDestinationType> for Option<ModDestination> {
@@ -132,6 +141,10 @@ impl From<ModDestinationType> for Option<ModDestination> {
             ModDestinationType::Osc4Pitch => ModDestination::OscPitch(3),
             ModDestinationType::Osc4Level => ModDestination::OscLevel(3),
             ModDestinationType::FilterMix => ModDestination::FilterMix,
+            ModDestinationType::Osc1Shape => ModDestination::OscShape(0),
+            ModDestinationType::Osc2Shape => ModDestination::OscShape(1),
+            ModDestinationType::Osc3Shape => ModDestination::OscShape(2),
+            ModDestinationType::Osc4Shape => ModDestination::OscShape(3),
         })
     }
 }
@@ -151,7 +164,15 @@ impl From<Option<ModDestination>> for ModDestinationType {
             Some(ModDestination::OscLevel(2)) => Self::Osc3Level,
             Some(ModDestination::OscPitch(3)) => Self::Osc4Pitch,
             Some(ModDestination::OscLevel(3)) => Self::Osc4Level,
-            Some(ModDestination::OscPitch(_) | ModDestination::OscLevel(_)) => Self::None,
+            Some(ModDestination::OscShape(0)) => Self::Osc1Shape,
+            Some(ModDestination::OscShape(1)) => Self::Osc2Shape,
+            Some(ModDestination::OscShape(2)) => Self::Osc3Shape,
+            Some(ModDestination::OscShape(3)) => Self::Osc4Shape,
+            Some(
+                ModDestination::OscPitch(_)
+                | ModDestination::OscLevel(_)
+                | ModDestination::OscShape(_),
+            ) => Self::None,
             Some(ModDestination::EffectCutoff(_)) => Self::FilterCutoff,
             Some(ModDestination::EffectQ(_)) => Self::FilterQ,
             Some(ModDestination::EffectMix(_)) => Self::FilterMix,
@@ -1105,6 +1126,43 @@ pub struct SynthParams {
         format = "format_percent"
     )]
     pub osc_4_unison_width: FloatParam,
+    // The shape range must match `engine::modulation`.
+    #[param(
+        name = "Osc 1 Shape",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_shape"
+    )]
+    pub osc_1_shape: FloatParam,
+    #[param(
+        name = "Osc 2 Shape",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_shape"
+    )]
+    pub osc_2_shape: FloatParam,
+    #[param(
+        name = "Osc 3 Shape",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_shape"
+    )]
+    pub osc_3_shape: FloatParam,
+    #[param(
+        name = "Osc 4 Shape",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_shape"
+    )]
+    pub osc_4_shape: FloatParam,
     /// Name of the loaded patch, saved with the host session. Empty means
     /// the built-in "Default" patch; see `crate::patch`.
     #[persist]
@@ -1569,10 +1627,11 @@ pub struct OscillatorParamIds {
     pub unison_voices: SynthParamsParamId,
     pub unison_detune: SynthParamsParamId,
     pub unison_width: SynthParamsParamId,
+    pub shape: SynthParamsParamId,
 }
 
 impl OscillatorParamIds {
-    pub const fn all(&self) -> [SynthParamsParamId; 7] {
+    pub const fn all(&self) -> [SynthParamsParamId; 8] {
         [
             self.waveform,
             self.phase,
@@ -1581,6 +1640,7 @@ impl OscillatorParamIds {
             self.unison_voices,
             self.unison_detune,
             self.unison_width,
+            self.shape,
         ]
     }
 }
@@ -1594,6 +1654,7 @@ pub const OSCILLATOR_PARAMS: [OscillatorParamIds; MAX_OSCILLATORS] = [
         unison_voices: SynthParamsParamId::Osc1UnisonVoices,
         unison_detune: SynthParamsParamId::Osc1UnisonDetune,
         unison_width: SynthParamsParamId::Osc1UnisonWidth,
+        shape: SynthParamsParamId::Osc1Shape,
     },
     OscillatorParamIds {
         waveform: SynthParamsParamId::Osc2Type,
@@ -1603,6 +1664,7 @@ pub const OSCILLATOR_PARAMS: [OscillatorParamIds; MAX_OSCILLATORS] = [
         unison_voices: SynthParamsParamId::Osc2UnisonVoices,
         unison_detune: SynthParamsParamId::Osc2UnisonDetune,
         unison_width: SynthParamsParamId::Osc2UnisonWidth,
+        shape: SynthParamsParamId::Osc2Shape,
     },
     OscillatorParamIds {
         waveform: SynthParamsParamId::Osc3Type,
@@ -1612,6 +1674,7 @@ pub const OSCILLATOR_PARAMS: [OscillatorParamIds; MAX_OSCILLATORS] = [
         unison_voices: SynthParamsParamId::Osc3UnisonVoices,
         unison_detune: SynthParamsParamId::Osc3UnisonDetune,
         unison_width: SynthParamsParamId::Osc3UnisonWidth,
+        shape: SynthParamsParamId::Osc3Shape,
     },
     OscillatorParamIds {
         waveform: SynthParamsParamId::Osc4Type,
@@ -1621,6 +1684,7 @@ pub const OSCILLATOR_PARAMS: [OscillatorParamIds; MAX_OSCILLATORS] = [
         unison_voices: SynthParamsParamId::Osc4UnisonVoices,
         unison_detune: SynthParamsParamId::Osc4UnisonDetune,
         unison_width: SynthParamsParamId::Osc4UnisonWidth,
+        shape: SynthParamsParamId::Osc4Shape,
     },
 ];
 
@@ -1686,6 +1750,14 @@ impl SynthParams {
         format!("{value:.0} %")
     }
 
+    fn format_shape(&self, value: f64) -> String {
+        if value.round() == 0.0 {
+            "0 %".to_owned()
+        } else {
+            format!("{value:+.0} %")
+        }
+    }
+
     fn format_cents(&self, value: f64) -> String {
         format!("{value:.0} cents")
     }
@@ -1748,6 +1820,15 @@ impl SynthParams {
                 &self.osc_4_unison_detune,
                 &self.osc_4_unison_width,
             ),
+        ]
+    }
+
+    fn shape_params(&self) -> [&FloatParam; MAX_OSCILLATORS] {
+        [
+            &self.osc_1_shape,
+            &self.osc_2_shape,
+            &self.osc_3_shape,
+            &self.osc_4_shape,
         ]
     }
 
@@ -1935,6 +2016,7 @@ impl PluginLogic for Synth {
             .set_oscillator_count(params.osc_count.value_usize());
         let oscillators = params.oscillator_params();
         let unison = params.unison_params();
+        let shapes = params.shape_params();
         for (index, (waveform, phase, _, _)) in oscillators.iter().enumerate() {
             state.engine.set_waveform(index, waveform.value().into());
             state.engine.set_start_phase(index, phase.read() / 360.0);
@@ -1981,6 +2063,9 @@ impl PluginLogic for Synth {
                 state
                     .engine
                     .set_oscillator_level(index, level.read() / 100.0);
+                state
+                    .engine
+                    .set_oscillator_shape(index, shapes[index].read() / 100.0);
                 let (voices, detune, width) = unison[index];
                 state.engine.set_oscillator_unison(
                     index,

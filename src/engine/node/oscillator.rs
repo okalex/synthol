@@ -12,6 +12,11 @@ pub enum Waveform {
 }
 
 const MAX_INCREMENT: f32 = 0.49;
+/// Shortest part of a cycle the shape control squeezes a segment into, so
+/// extreme shapes stay audible pulses or steep slopes instead of vanishing.
+const MIN_SEGMENT: f32 = 0.02;
+/// Fewest samples a compressed sawtooth ramp is squeezed into.
+const MIN_SAW_SAMPLES: f32 = 8.0;
 pub const MAX_UNISON_VOICES: usize = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,6 +54,8 @@ pub struct Oscillator {
     pitch_ratio: f32,
     /// Output gain, 0 to 1.
     level: f32,
+    /// Waveform shape, -1 to 1; 0 plays the plain waveform.
+    shape: f32,
     waveform: Waveform,
     active_note: Option<u8>,
 }
@@ -66,6 +73,7 @@ impl Default for Oscillator {
             pitch_semitones: 0.0,
             pitch_ratio: 1.0,
             level: 1.0,
+            shape: 0.0,
             waveform: Waveform::default(),
             active_note: None,
         }
@@ -112,6 +120,16 @@ impl Oscillator {
             level.clamp(0.0, 1.0)
         } else {
             1.0
+        };
+    }
+
+    /// Set the waveform shape (`-1.0..=1.0`, 0 for the plain waveform). See
+    /// [`waveform_sample`] for what it does to each waveform.
+    pub fn set_shape(&mut self, shape: f32) {
+        self.shape = if shape.is_finite() {
+            shape.clamp(-1.0, 1.0)
+        } else {
+            0.0
         };
     }
 
@@ -176,7 +194,7 @@ impl Oscillator {
             // Clamp each detuned voice below Nyquist, including PolyBLEP shapes.
             let increment =
                 (base_increment * (position * detune / 1200.0).exp2()).min(MAX_INCREMENT);
-            let sample = waveform_sample(self.waveform, *phase, increment) * gain;
+            let sample = waveform_sample(self.waveform, self.shape, *phase, increment) * gain;
             *phase = (*phase + increment).fract();
             output[0] += sample * (1.0 - pan);
             output[1] += sample * (1.0 + pan);
@@ -198,12 +216,12 @@ impl Oscillator {
     }
 }
 
-/// Fills `samples` with one cycle of `waveform` as a note starting at
-/// normalized `start_phase` plays it: 0 to 360 degrees inclusive, relative to
+/// Fills `samples` with one cycle of `waveform` at `shape` as a note starting
+/// at normalized `start_phase` plays it: 0 to 360 degrees inclusive, relative to
 /// the start. Uses the same band-limited shape the oscillator plays as if it
 /// produced `samples.len() - 1` samples per cycle. Intended for displays, so
 /// shapes are computed rather than drawn by hand.
-pub fn render_cycle(waveform: Waveform, start_phase: f32, samples: &mut [f32]) {
+pub fn render_cycle(waveform: Waveform, shape: f32, start_phase: f32, samples: &mut [f32]) {
     let Some(segments) = samples.len().checked_sub(1).filter(|&n| n > 0) else {
         samples.fill(0.0);
         return;
@@ -212,7 +230,7 @@ pub fn render_cycle(waveform: Waveform, start_phase: f32, samples: &mut [f32]) {
     let increment = 1.0 / segments as f32;
     for (index, sample) in samples.iter_mut().enumerate() {
         let phase = (start_phase + index as f32 * increment).fract();
-        *sample = waveform_sample(waveform, phase, increment);
+        *sample = waveform_sample(waveform, shape, phase, increment);
     }
 }
 
@@ -228,13 +246,84 @@ fn wrap_phase(phase: f32) -> f32 {
 /// sub-audio sources such as LFOs where hard edges are intended.
 #[cfg(test)]
 pub(crate) fn naive_waveform_sample(waveform: Waveform, phase: f32) -> f32 {
-    waveform_sample(waveform, phase, 0.0)
+    waveform_sample(waveform, 0.0, phase, 0.0)
 }
 
-/// One sample of `waveform` at normalized `phase`. Every shape is zero and
-/// rising at phase 0, so notes with the default start phase begin without a
-/// jump.
-fn waveform_sample(waveform: Waveform, phase: f32, increment: f32) -> f32 {
+/// One sample of `waveform` at normalized `phase`. At shape 0 every waveform
+/// is zero and rising at phase 0, so notes with the default start phase begin
+/// without a jump.
+///
+/// `shape` (-1 to 1, 0 for the plain waveform) bends each waveform:
+/// - Sine and triangle lean: the rise shortens towards -1, approaching a
+///   (rounded) falling saw, and lengthens towards 1, approaching a rising saw.
+/// - Square changes duty cycle: the high part shortens towards -1 into an
+///   upward pulse and lengthens towards 1, leaving a downward pulse. The
+///   levels shift to keep the wave free of DC with a peak of 1.
+/// - Sawtooth is compressed in time by `|shape|`, silent for the rest of the
+///   cycle: at the start of the cycle for negative shapes, at the end for
+///   positive ones.
+fn waveform_sample(waveform: Waveform, shape: f32, phase: f32, increment: f32) -> f32 {
+    if shape == 0.0 {
+        return plain_waveform_sample(waveform, phase, increment);
+    }
+    match waveform {
+        Waveform::Sine | Waveform::Triangle => {
+            let rise = shaped_split(shape, increment);
+            // Offset so phase 0 is the zero crossing in the middle of the rise.
+            let t = (phase + 0.5 * rise).fract();
+            let curved = waveform == Waveform::Sine;
+            if t < rise {
+                let x = t / rise;
+                if curved {
+                    -(std::f32::consts::PI * x).cos()
+                } else {
+                    2.0 * x - 1.0
+                }
+            } else {
+                let x = (t - rise) / (1.0 - rise);
+                if curved {
+                    (std::f32::consts::PI * x).cos()
+                } else {
+                    1.0 - 2.0 * x
+                }
+            }
+        }
+        Waveform::Square => {
+            let duty = shaped_split(shape, increment);
+            let peak = duty.max(1.0 - duty);
+            let high = (1.0 - duty) / peak;
+            let low = -duty / peak;
+            let naive = if phase < duty { high } else { low };
+            let step = 0.5 * (high - low);
+            naive + step * poly_blep(phase, increment)
+                - step * poly_blep((phase - duty).rem_euclid(1.0), increment)
+        }
+        Waveform::Sawtooth => {
+            // Keep at least a few samples in the ramp so it doesn't vanish at
+            // high pitches.
+            let min_width = (MIN_SAW_SAMPLES * increment)
+                .max(increment / MAX_INCREMENT)
+                .clamp(MIN_SEGMENT, 1.0);
+            let width = (1.0 - shape.abs() * (1.0 - min_width)).max(min_width);
+            let start = if shape < 0.0 { 0.0 } else { 1.0 - width };
+            let local = phase - start;
+            if !(0.0..width).contains(&local) {
+                return 0.0;
+            }
+            plain_waveform_sample(Waveform::Sawtooth, local / width, increment / width)
+        }
+    }
+}
+
+/// Where `shape` splits a cycle into two segments, from near 0 (at -1) through
+/// 0.5 (at 0) to near 1 (at 1), keeping each segment long enough to limit
+/// aliasing.
+fn shaped_split(shape: f32, increment: f32) -> f32 {
+    let min_segment = (2.0 * increment).clamp(MIN_SEGMENT, 0.5);
+    0.5 + 0.5 * shape.clamp(-1.0, 1.0) * (1.0 - 2.0 * min_segment)
+}
+
+fn plain_waveform_sample(waveform: Waveform, phase: f32, increment: f32) -> f32 {
     match waveform {
         Waveform::Sine => (TAU * phase).sin(),
         Waveform::Square => {
@@ -274,8 +363,8 @@ pub fn midi_note_frequency(note: u8) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_UNISON_VOICES, Oscillator, TAU, UnisonSettings, Waveform, midi_note_frequency,
-        render_cycle, waveform_sample,
+        MAX_INCREMENT, MAX_UNISON_VOICES, Oscillator, TAU, UnisonSettings, Waveform,
+        midi_note_frequency, render_cycle, waveform_sample,
     };
     use crate::engine::MidiEvent;
 
@@ -290,7 +379,7 @@ mod tests {
     fn rendered_cycle_spans_zero_to_360_degrees() {
         for waveform in WAVEFORMS {
             let mut samples = [0.0; 257];
-            render_cycle(waveform, 0.0, &mut samples);
+            render_cycle(waveform, 0.0, 0.0, &mut samples);
             assert!(
                 samples[0].abs() < 1e-5,
                 "{waveform:?} starts at {}",
@@ -312,7 +401,7 @@ mod tests {
     fn rendered_cycle_matches_the_oscillator() {
         // 128 samples per cycle keeps phase accumulation exact.
         let mut samples = [0.0; 129];
-        render_cycle(Waveform::Sawtooth, 0.0, &mut samples);
+        render_cycle(Waveform::Sawtooth, 0.0, 0.0, &mut samples);
 
         let mut oscillator = Oscillator::default();
         oscillator.reset(128.0);
@@ -332,7 +421,7 @@ mod tests {
     fn rendered_cycle_differs_per_waveform() {
         let render = |waveform| {
             let mut samples = [0.0; 65];
-            render_cycle(waveform, 0.0, &mut samples);
+            render_cycle(waveform, 0.0, 0.0, &mut samples);
             samples
         };
         for (index, a) in WAVEFORMS.iter().enumerate() {
@@ -374,7 +463,7 @@ mod tests {
     fn rendered_cycle_starts_at_the_start_phase() {
         // 128 samples per cycle keeps phase accumulation exact.
         let mut samples = [0.0; 129];
-        render_cycle(Waveform::Square, 0.375, &mut samples);
+        render_cycle(Waveform::Square, 0.0, 0.375, &mut samples);
 
         let mut oscillator = Oscillator::default();
         oscillator.reset(128.0);
@@ -395,9 +484,9 @@ mod tests {
     #[test]
     fn rendered_cycle_handles_tiny_buffers() {
         let mut empty: [f32; 0] = [];
-        render_cycle(Waveform::Sine, 0.0, &mut empty);
+        render_cycle(Waveform::Sine, 0.0, 0.0, &mut empty);
         let mut single = [1.0];
-        render_cycle(Waveform::Square, 0.0, &mut single);
+        render_cycle(Waveform::Square, 0.0, 0.0, &mut single);
         assert_eq!(single, [0.0]);
     }
 
@@ -424,7 +513,7 @@ mod tests {
         for (waveform, expected) in cases {
             for (index, expected) in expected.into_iter().enumerate() {
                 let phase = index as f32 * 0.25;
-                let actual = waveform_sample(waveform, phase, 0.01);
+                let actual = waveform_sample(waveform, 0.0, phase, 0.01);
                 // PolyBLEP smooths the square and sawtooth edges to zero.
                 assert!(
                     (actual - expected).abs() < 1e-5,
@@ -437,24 +526,27 @@ mod tests {
     #[test]
     fn square_is_flat_between_edges() {
         for phase in [0.1, 0.2, 0.3, 0.4] {
-            assert_eq!(waveform_sample(Waveform::Square, phase, 0.01), 1.0);
-            assert_eq!(waveform_sample(Waveform::Square, phase + 0.5, 0.01), -1.0);
+            assert_eq!(waveform_sample(Waveform::Square, 0.0, phase, 0.01), 1.0);
+            assert_eq!(
+                waveform_sample(Waveform::Square, 0.0, phase + 0.5, 0.01),
+                -1.0
+            );
         }
     }
 
     #[test]
     fn triangle_is_linear_between_peaks() {
-        let a = waveform_sample(Waveform::Triangle, 0.3, 0.01);
-        let b = waveform_sample(Waveform::Triangle, 0.4, 0.01);
-        let c = waveform_sample(Waveform::Triangle, 0.5, 0.01);
+        let a = waveform_sample(Waveform::Triangle, 0.0, 0.3, 0.01);
+        let b = waveform_sample(Waveform::Triangle, 0.0, 0.4, 0.01);
+        let c = waveform_sample(Waveform::Triangle, 0.0, 0.5, 0.01);
         assert!(((a - b) - (b - c)).abs() < 1e-5);
     }
 
     #[test]
     fn sawtooth_ramps_up_between_edges() {
-        let a = waveform_sample(Waveform::Sawtooth, 0.6, 0.01);
-        let b = waveform_sample(Waveform::Sawtooth, 0.7, 0.01);
-        let c = waveform_sample(Waveform::Sawtooth, 0.8, 0.01);
+        let a = waveform_sample(Waveform::Sawtooth, 0.0, 0.6, 0.01);
+        let b = waveform_sample(Waveform::Sawtooth, 0.0, 0.7, 0.01);
+        let c = waveform_sample(Waveform::Sawtooth, 0.0, 0.8, 0.01);
         assert!(a < b && b < c);
         assert!(((b - a) - (c - b)).abs() < 1e-5);
     }
@@ -684,5 +776,170 @@ mod tests {
         );
         oscillator.reset(48_000.0);
         assert_eq!(oscillator.next_stereo_sample(settings), [0.0; 2]);
+    }
+
+    fn shaped_cycle(waveform: Waveform, shape: f32) -> [f32; 257] {
+        let mut samples = [0.0; 257];
+        render_cycle(waveform, shape, 0.0, &mut samples);
+        samples
+    }
+
+    fn peak_index(samples: &[f32]) -> usize {
+        (0..samples.len())
+            .max_by(|&a, &b| samples[a].total_cmp(&samples[b]))
+            .unwrap()
+    }
+
+    #[test]
+    fn shape_is_clamped_and_ignores_non_finite_values() {
+        let mut oscillator = Oscillator::default();
+        for (input, expected) in [(0.5, 0.5), (2.0, 1.0), (-3.0, -1.0), (f32::NAN, 0.0)] {
+            oscillator.set_shape(input);
+            assert_eq!(oscillator.shape, expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn small_shapes_stay_close_to_the_plain_waveform() {
+        for waveform in WAVEFORMS {
+            let plain = shaped_cycle(waveform, 0.0);
+            for shape in [-1e-4, 1e-4] {
+                let shaped = shaped_cycle(waveform, shape);
+                for (index, (a, b)) in plain.iter().zip(shaped).enumerate() {
+                    // Samples on a hard edge shift slightly with the edge.
+                    assert!((a - b).abs() < 5e-2, "{waveform:?} {shape} sample {index}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shaped_waveforms_stay_bounded_and_have_no_dc() {
+        for waveform in WAVEFORMS {
+            for shape in [-1.0, -0.6, -0.2, 0.3, 0.7, 1.0] {
+                let mut oscillator = Oscillator::default();
+                oscillator.reset(48_000.0);
+                oscillator.set_waveform(waveform);
+                oscillator.set_shape(shape);
+                oscillator.handle_event(MidiEvent::NoteOn {
+                    note: 71,
+                    velocity: 127,
+                });
+                // 480 Hz divides 48 kHz evenly, so 1000 samples are 10 cycles.
+                oscillator.frequency = 480.0;
+
+                let samples: Vec<f32> = (0..1_000).map(|_| oscillator.next_sample()).collect();
+                let peak = samples.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+                let mean = samples.iter().sum::<f32>() / samples.len() as f32;
+                assert!(peak <= 1.0 + 1e-5, "{waveform:?} {shape} peak {peak}");
+                // A ramp squeezed into a few samples loses some of its peak
+                // to band-limiting.
+                assert!(peak > 0.7, "{waveform:?} {shape} peak {peak}");
+                assert!(mean.abs() < 2e-3, "{waveform:?} {shape} DC {mean}");
+            }
+        }
+    }
+
+    #[test]
+    fn shaped_waveforms_stay_finite_and_bounded_at_high_pitches() {
+        for waveform in WAVEFORMS {
+            for shape in [-1.0, -0.5, 0.5, 1.0] {
+                for increment in [0.1, 0.3, MAX_INCREMENT] {
+                    for step in 0..100 {
+                        let phase = step as f32 / 100.0;
+                        let sample = waveform_sample(waveform, shape, phase, increment);
+                        assert!(
+                            sample.is_finite() && sample.abs() <= 1.0 + 1e-5,
+                            "{waveform:?} {shape} {increment} {phase}: {sample}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sine_and_triangle_lean_with_the_shape() {
+        for waveform in [Waveform::Sine, Waveform::Triangle] {
+            // Plain waveforms peak a quarter of the way through the cycle.
+            assert_eq!(peak_index(&shaped_cycle(waveform, 0.0)), 64);
+            let left = peak_index(&shaped_cycle(waveform, -0.5));
+            let far_left = peak_index(&shaped_cycle(waveform, -1.0));
+            let right = peak_index(&shaped_cycle(waveform, 0.5));
+            let far_right = peak_index(&shaped_cycle(waveform, 1.0));
+            assert!(far_left < left && left < 64, "{waveform:?}");
+            assert!(64 < right && right < far_right, "{waveform:?}");
+            // At the extremes, a short rise and long fall (falling saw) or
+            // the reverse (rising saw).
+            assert!(far_left < 8 && far_right > 120, "{waveform:?}");
+            for shape in [-1.0, 1.0] {
+                let samples = shaped_cycle(waveform, shape);
+                assert!(samples[0].abs() < 1e-5 && samples[256].abs() < 1e-5);
+                assert!(samples[1] > samples[0], "{waveform:?} rises from zero");
+            }
+        }
+    }
+
+    #[test]
+    fn square_shape_sets_the_duty_cycle() {
+        let high_fraction = |shape| {
+            let samples = shaped_cycle(Waveform::Square, shape);
+            let peak = samples.iter().fold(f32::MIN, |a, &b| a.max(b));
+            samples[..256].iter().filter(|&&s| s > peak - 1e-3).count() as f32 / 256.0
+        };
+        assert!((high_fraction(0.0) - 0.5).abs() < 0.02);
+        assert!((high_fraction(-0.5) - 0.25).abs() < 0.02);
+        assert!((high_fraction(0.5) - 0.75).abs() < 0.02);
+        // Fully left is a narrow upward pulse from a level just below zero.
+        let pulse = shaped_cycle(Waveform::Square, -1.0);
+        assert!(high_fraction(-1.0) < 0.05);
+        assert!(pulse[128] < 0.0 && pulse[128] > -0.1);
+        // Fully right is a narrow downward pulse below a level just above zero.
+        let pulse = shaped_cycle(Waveform::Square, 1.0);
+        assert!(high_fraction(1.0) > 0.95);
+        assert!(pulse[128] > 0.0 && pulse[128] < 0.1);
+        assert!(pulse.iter().any(|&s| s < -0.9));
+    }
+
+    #[test]
+    fn sawtooth_shape_compresses_the_ramp_to_one_end_of_the_cycle() {
+        let plain = shaped_cycle(Waveform::Sawtooth, 0.0);
+        assert!(plain[64] > 0.4 && plain[192] < -0.4);
+
+        let left = shaped_cycle(Waveform::Sawtooth, -0.5);
+        assert!(left[..128].iter().any(|&s| s > 0.9));
+        assert!(left[..128].iter().any(|&s| s < -0.9));
+        // The ramp fills just over half the cycle (about 132 of 256 samples).
+        assert!(left[133..].iter().all(|&s| s == 0.0));
+
+        let right = shaped_cycle(Waveform::Sawtooth, 0.5);
+        assert!(right[..123].iter().all(|&s| s == 0.0));
+        assert!(right[128..].iter().any(|&s| s > 0.9));
+        assert!(right[128..].iter().any(|&s| s < -0.9));
+
+        // Fully turned, the ramp is squeezed into a short burst.
+        let squeezed = shaped_cycle(Waveform::Sawtooth, -1.0);
+        assert!(squeezed[16..].iter().all(|&s| s == 0.0));
+        assert!(squeezed[..16].iter().any(|&s| s != 0.0));
+    }
+
+    #[test]
+    fn oscillator_plays_its_shape() {
+        let mut samples = [0.0; 129];
+        render_cycle(Waveform::Square, -0.4, 0.0, &mut samples);
+
+        let mut oscillator = Oscillator::default();
+        oscillator.reset(128.0);
+        oscillator.set_waveform(Waveform::Square);
+        oscillator.set_shape(-0.4);
+        oscillator.handle_event(MidiEvent::NoteOn {
+            note: 69,
+            velocity: 127,
+        });
+        oscillator.frequency = 1.0;
+        for (index, expected) in samples[..128].iter().enumerate() {
+            let actual = oscillator.next_sample();
+            assert!((actual - expected).abs() < 1e-5, "sample {index}");
+        }
     }
 }

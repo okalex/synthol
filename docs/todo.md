@@ -1,4 +1,3 @@
-- Oscillator shape knob
 - Oscillator pan
 - Per oscillator fx chain
 - More FX:
@@ -8,3 +7,4 @@
   - Reverb
 - MIDI FX:
   - Arpeggiator
+- Bypass components without removing them
