@@ -14,7 +14,7 @@ export struct KnobModulation {
 component KnobArc inherits Path {
     in property <float> from;
     in property <float> to;
-    in property <float> radius: 26;
+    in property <float> radius: 19.5;
     private property <angle> start-angle: 210deg + min(root.from, root.to) * 300deg;
     private property <angle> end-angle: 210deg + max(root.from, root.to) * 300deg;
 
@@ -22,21 +22,21 @@ component KnobArc inherits Path {
     // pixels, as in WaveformDisplay.
     x: -self.stroke-width / 2;
     y: -self.stroke-width / 2;
-    width: 84px + self.stroke-width;
-    height: 84px + self.stroke-width;
-    viewbox-width: 84;
-    viewbox-height: 84;
-    stroke-width: 3px;
+    width: 63px + self.stroke-width;
+    height: 63px + self.stroke-width;
+    viewbox-width: 63;
+    viewbox-height: 63;
+    stroke-width: 2.25px;
     visible: abs(root.to - root.from) > 0.002;
 
     MoveTo {
-        x: 42 + root.radius * sin(root.start-angle);
-        y: 40 - root.radius * cos(root.start-angle);
+        x: 31.5 + root.radius * sin(root.start-angle);
+        y: 30 - root.radius * cos(root.start-angle);
     }
 
     ArcTo {
-        x: 42 + root.radius * sin(root.end-angle);
-        y: 40 - root.radius * cos(root.end-angle);
+        x: 31.5 + root.radius * sin(root.end-angle);
+        y: 30 - root.radius * cos(root.end-angle);
         radius-x: root.radius;
         radius-y: root.radius;
         large-arc: root.end-angle - root.start-angle > 180deg;
@@ -68,7 +68,7 @@ export component SynthKnob inherits Rectangle {
         && root.mod-drag-x >= root.absolute-position.x
         && root.mod-drag-x < root.absolute-position.x + root.width
         && root.mod-drag-y >= root.absolute-position.y
-        && root.mod-drag-y < root.absolute-position.y + 80px;
+        && root.mod-drag-y < root.absolute-position.y + 60px;
     out property <bool> mod-drop-hover: root.mod-drag-active && root.mod-pointer-inside;
     callback mod-dropped(int);
     changed mod-drop-count => {
@@ -83,8 +83,8 @@ export component SynthKnob inherits Rectangle {
     callback mod-depth-changed(int, float);
     callback mod-depth-released(int);
 
-    width: 84px;
-    height: 112px;
+    width: 63px;
+    height: 66px;
 
     Text {
         x: 0px;
@@ -99,25 +99,25 @@ export component SynthKnob inherits Rectangle {
 
     // Drop-target ring while an LFO drag is in progress.
     Rectangle {
-        x: 13px;
-        y: 11px;
-        width: 58px;
-        height: 58px;
-        border-radius: 29px;
-        border-width: root.mod-drop-hover ? 2px : 1px;
+        x: 9.75px;
+        y: 8.25px;
+        width: 43.5px;
+        height: 43.5px;
+        border-radius: 21.75px;
+        border-width: root.mod-drop-hover ? 1.5px : 0.75px;
         border-color: #f2b84d;
         opacity: root.mod-drop-hover ? 1.0 : 0.4;
         visible: root.mod-target >= 0 && root.mod-drag-active;
     }
 
     Rectangle {
-        x: 20px;
-        y: 18px;
-        width: 44px;
-        height: 44px;
-        border-radius: 22px;
+        x: 15px;
+        y: 13.5px;
+        width: 33px;
+        height: 33px;
+        border-radius: 16.5px;
         background: #292d36;
-        border-width: 1px;
+        border-width: 0.75px;
         border-color: #424754;
     }
 
@@ -142,27 +142,27 @@ export component SynthKnob inherits Rectangle {
     }
 
     if root.modulation.routed && root.modulation.live-visible: Rectangle {
-        x: 42px + 26px * sin(210deg + root.modulation.live * 300deg) - 3.5px;
-        y: 40px - 26px * cos(210deg + root.modulation.live * 300deg) - 3.5px;
-        width: 7px;
-        height: 7px;
-        border-radius: 3.5px;
+        x: 31.5px + 19.5px * sin(210deg + root.modulation.live * 300deg) - 2.625px;
+        y: 30px - 19.5px * cos(210deg + root.modulation.live * 300deg) - 2.625px;
+        width: 5.25px;
+        height: 5.25px;
+        border-radius: 2.625px;
         background: #ffe2a8;
     }
 
     Rectangle {
         // Clockwise sweep from 7 o'clock (210deg) to 5 o'clock (510deg).
-        x: 42px + 16px * sin(210deg + root.shown-value * 300deg) - 3px;
-        y: 40px - 16px * cos(210deg + root.shown-value * 300deg) - 3px;
-        width: 6px;
-        height: 6px;
-        border-radius: 3px;
+        x: 31.5px + 12px * sin(210deg + root.shown-value * 300deg) - 2.25px;
+        y: 30px - 12px * cos(210deg + root.shown-value * 300deg) - 2.25px;
+        width: 4.5px;
+        height: 4.5px;
+        border-radius: 2.25px;
         background: #56a7ff;
     }
 
     Text {
         x: 0px;
-        y: 70px;
+        y: 52.5px;
         width: parent.width;
         text: root.value-text;
         font-size: 10px;
@@ -171,10 +171,10 @@ export component SynthKnob inherits Rectangle {
     }
 
     TouchArea {
-        x: 12px;
-        y: 12px;
-        width: 60px;
-        height: 60px;
+        x: 9px;
+        y: 9px;
+        width: 45px;
+        height: 45px;
         property <bool> gesture-active: false;
         property <bool> depth-gesture: false;
         property <float> start-value: 0.0;
@@ -614,7 +614,6 @@ export component AdsrEnvelopePanel inherits Rectangle {
             spacing: root.compact ? 12px : 18px;
 
             SynthKnob {
-                height: root.compact ? 88px : 112px;
                 value <=> root.attack;
                 label: "ATTACK";
                 value-text: root.attack-text;
@@ -625,7 +624,6 @@ export component AdsrEnvelopePanel inherits Rectangle {
             }
 
             SynthKnob {
-                height: root.compact ? 88px : 112px;
                 value <=> root.decay;
                 label: "DECAY";
                 value-text: root.decay-text;
@@ -636,7 +634,6 @@ export component AdsrEnvelopePanel inherits Rectangle {
             }
 
             SynthKnob {
-                height: root.compact ? 88px : 112px;
                 value <=> root.sustain;
                 label: "SUSTAIN";
                 value-text: root.sustain-text;
@@ -647,7 +644,6 @@ export component AdsrEnvelopePanel inherits Rectangle {
             }
 
             SynthKnob {
-                height: root.compact ? 88px : 112px;
                 value <=> root.release;
                 label: "RELEASE";
                 value-text: root.release-text;

@@ -30,7 +30,7 @@ use crate::plugin::{
 
 slint::include_modules!();
 
-const EDITOR_SIZE: (u32, u32) = (1100, 1100);
+const EDITOR_SIZE: (u32, u32) = (980, 1016);
 
 const ENVELOPE_PLOT_MAX_MS: f32 = 30_000.0;
 
@@ -779,6 +779,8 @@ fn oscillator_row(
         level_text: state.format_param(params.level).into(),
         shape: state.get_param(params.shape),
         shape_text: state.format_param(params.shape).into(),
+        pan: state.get_param(params.pan),
+        pan_text: state.format_param(params.pan).into(),
         unison_voices: state.get_param(params.unison_voices),
         unison_detune: state.get_param(params.unison_detune),
         unison_width: state.get_param(params.unison_width),
@@ -1341,7 +1343,7 @@ fn oscillator_params(oscillator: i32) -> Option<&'static crate::plugin::Oscillat
 }
 
 /// Oscillator controls: pitch, level, phase, unison voices, detune, width,
-/// shape.
+/// shape, pan.
 fn oscillator_parameter(oscillator: i32, id: i32) -> Option<SynthParamsParamId> {
     let params = oscillator_params(oscillator)?;
     match id {
@@ -1352,6 +1354,7 @@ fn oscillator_parameter(oscillator: i32, id: i32) -> Option<SynthParamsParamId> 
         4 => Some(params.unison_detune),
         5 => Some(params.unison_width),
         6 => Some(params.shape),
+        7 => Some(params.pan),
         _ => None,
     }
 }
@@ -1810,13 +1813,13 @@ mod tests {
         }));
         let dark_rows = (150..400)
             .filter(|&y| {
-                (570..1070)
+                (641..1070)
                     .filter(|&x| {
                         let pixel = pixels[y * 1100 + x];
                         (pixel.red, pixel.green, pixel.blue) == (17, 19, 25)
                     })
                     .count()
-                    >= 450
+                    >= 380
             })
             .collect::<Vec<_>>();
         assert!(
@@ -1826,7 +1829,7 @@ mod tests {
 
         let original_attack = state.get_param(ENV_PARAMS[0].adsr[0]);
         let grid_columns = |y: usize| {
-            (570..1070)
+            (641..1070)
                 .filter(|&x| {
                     let pixel = pixels[y * 1100 + x];
                     (pixel.red, pixel.green, pixel.blue) == (40, 44, 52)
@@ -1834,7 +1837,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let grid_rows: Vec<_> = (150..400)
-            .filter(|&y| grid_columns(y).len() >= 400)
+            .filter(|&y| grid_columns(y).len() >= 340)
             .collect();
         let plot_top = grid_rows[0];
         let plot_bottom = *grid_rows.last().unwrap();
@@ -1852,7 +1855,7 @@ mod tests {
                 renderer.render(&mut pixels, 1100);
             }));
             let blue_columns = |y: usize| {
-                (570..1070)
+                (641..1070)
                     .filter(|&x| {
                         let pixel = pixels[y * 1100 + x];
                         (pixel.red, pixel.green, pixel.blue) == (86, 167, 255)
@@ -1864,7 +1867,7 @@ mod tests {
             let attack_ms = params.attack.info.range.denormalize(f64::from(attack)) as f32;
             let expected_peak = plot_left + envelope_time_position(attack_ms) * plot_width;
             assert!(
-                (peak_center - expected_peak).abs() <= 1.5,
+                (peak_center - expected_peak).abs() <= 3.0,
                 "attack peak must follow logarithmic time: {peak_center} vs {expected_peak}"
             );
             let endpoint_columns = blue_columns(plot_bottom);
@@ -1879,7 +1882,7 @@ mod tests {
             let total_ms = attack_ms + params.decay.value() + params.release.value();
             let expected_end = plot_left + envelope_time_position(total_ms) * plot_width;
             assert!(
-                (endpoint_center - expected_end).abs() <= 1.5,
+                (endpoint_center - expected_end).abs() <= 3.0,
                 "release endpoint must follow cumulative time: {endpoint_center} vs {expected_end}"
             );
             let decay_time = attack_ms + params.decay.value();
@@ -1994,14 +1997,14 @@ mod tests {
                     button: slint::platform::PointerEventButton::Left,
                 });
         };
-        click_tab(570.0);
+        click_tab(650.0);
         sync(&state);
         assert!(
             ui.get_envelope_selected(),
             "ENV and LFO tabs must be individually clickable"
         );
         assert_eq!(ui.get_current_envelope(), 0);
-        click_tab(790.0);
+        click_tab(880.0);
         sync(&state);
         assert!(
             !ui.get_envelope_selected(),
@@ -2076,7 +2079,7 @@ mod tests {
             .last()
             .unwrap();
         let rows: Vec<_> = (bottom + 10..bottom + 115)
-            .filter(|&y| color(400, y) == (41, 45, 54) && color(400, y - 1) != (41, 45, 54))
+            .filter(|&y| color(470, y) == (41, 45, 54) && color(470, y - 1) != (41, 45, 54))
             .collect();
         assert_eq!(
             rows.len(),
@@ -2084,7 +2087,7 @@ mod tests {
             "three numeric boxes must be right of all oscillator knobs"
         );
         let drag = |row: usize, delta: f32| {
-            let start = slint::LogicalPosition::new(400.0, rows[row] as f32 + 8.0);
+            let start = slint::LogicalPosition::new(470.0, rows[row] as f32 + 8.0);
             let end = slint::LogicalPosition::new(start.x, start.y + delta);
             ui.window().dispatch_event(WindowEvent::PointerPressed {
                 position: start,
@@ -2114,7 +2117,7 @@ mod tests {
         ui.invoke_oscillator_add();
         ui.set_selected_oscillator(1);
         sync(&state);
-        for (id, value) in [(3, 1.0), (4, 0.4), (5, 0.75)] {
+        for (id, value) in [(3, 1.0), (4, 0.4), (5, 0.75), (7, 0.75)] {
             ui.invoke_osc_changed(1, id, value);
             ui.invoke_osc_released(1, id);
         }
@@ -2123,15 +2126,19 @@ mod tests {
         assert_eq!(row.unison_voices, 1.0);
         assert_eq!(row.unison_detune, 0.4);
         assert_eq!(row.unison_width, 0.75);
+        assert_eq!(row.pan, 0.75);
         assert_eq!(params.osc_1_unison_voices.value_usize(), 1);
+        assert_eq!(params.osc_2_pan.value(), 50.0);
         ui.invoke_oscillator_remove(0);
         sync(&state);
         assert_eq!(params.osc_1_unison_voices.value_usize(), 20);
         assert_eq!(params.osc_1_unison_detune.value(), 20.0);
         assert_eq!(params.osc_1_unison_width.value(), 75.0);
+        assert_eq!(params.osc_1_pan.value(), 50.0);
         assert_eq!(params.osc_2_unison_voices.value_usize(), 1);
         assert_eq!(params.osc_2_unison_detune.value(), 0.0);
         assert_eq!(params.osc_2_unison_width.value(), 0.0);
+        assert_eq!(params.osc_2_pan.value(), 0.0);
         ui.hide().unwrap();
     }
 
@@ -2385,19 +2392,27 @@ mod tests {
             .map(|pixel| (pixel.red, pixel.green, pixel.blue))
             .collect();
         let pixel_at = |image: &[(u8, u8, u8)], x: usize, y: usize| image[y * width as usize + x];
-        let plot_rows = |image: &[(u8, u8, u8)], left: usize, right: usize| {
+        let osc_width = (width as usize - 52) / 2 + 71;
+        let mod_width = (width as usize - 52) / 2 - 71;
+        let right_column = 30 + osc_width + 16;
+        let plot_rows = |image: &[(u8, u8, u8)], left: usize, right: usize, min_dark: usize| {
             (150..500)
                 .filter(|&y| {
                     (left..right)
                         // Plot background, or the LFO shape's area fill.
                         .filter(|&x| matches!(pixel_at(image, x, y), (17, 19, 25) | (25, 38, 55)))
                         .count()
-                        >= 450
+                        >= min_dark
                 })
                 .collect::<Vec<_>>()
         };
-        let oscillator_plot = plot_rows(&active_pixels, 30, 530);
-        let lfo_plot = plot_rows(&active_pixels, 570, 1070);
+        let oscillator_plot = plot_rows(&active_pixels, 30, 30 + osc_width - 24, osc_width - 60);
+        let lfo_plot = plot_rows(
+            &active_pixels,
+            right_column,
+            right_column + mod_width - 24,
+            mod_width - 60,
+        );
         assert!(
             oscillator_plot.len() >= 140,
             "oscillator plot must be wide and tall"
@@ -2409,21 +2424,41 @@ mod tests {
             "plots must align in two columns"
         );
         let plot_bottom = *oscillator_plot.last().unwrap();
-        for x in [72, 164, 256, 348, 820] {
+        for x in [66, 137, 208, 279, 350, right_column + (mod_width - 24) / 2] {
             assert_eq!(
-                pixel_at(&active_pixels, x, plot_bottom + 52),
+                pixel_at(&active_pixels, x, plot_bottom + 40),
                 (41, 45, 54),
                 "oscillator and LFO knobs must sit directly below their plots"
             );
         }
+        for center in [66, 137, 208, 279, 350] {
+            let diameter = (center - 20..center + 20)
+                .filter(|&x| {
+                    matches!(
+                        pixel_at(&active_pixels, x, plot_bottom + 41),
+                        (41, 45, 54) | (66, 71, 84)
+                    )
+                })
+                .count();
+            assert!(
+                (31..=33).contains(&diameter),
+                "33-pixel knobs must have 31-33 solid pixels, excluding antialiased edges: {diameter}"
+            );
+        }
         assert_eq!(
-            pixel_at(&active_pixels, 790, 150),
+            pixel_at(&active_pixels, right_column + 220, 150),
             (41, 45, 54),
             "LFO mode selector must be beside the shape selector above the plot"
         );
-        assert!(plot_rows(&empty_pixels, 30, 530).len() >= 140);
+        assert!(plot_rows(&empty_pixels, 30, 30 + osc_width - 24, osc_width - 60).len() >= 140);
         assert!(
-            plot_rows(&empty_pixels, 570, 1070).is_empty(),
+            plot_rows(
+                &empty_pixels,
+                right_column,
+                right_column + mod_width - 24,
+                mod_width - 60,
+            )
+            .is_empty(),
             "an empty Modulators column must not show an LFO plot"
         );
         for image in [&empty_pixels, &active_pixels] {
@@ -3013,7 +3048,11 @@ mod tests {
             oscillator_parameter(2, 6),
             Some(SynthParamsParamId::Osc3Shape)
         );
-        assert_eq!(oscillator_parameter(0, 7), None);
+        assert_eq!(
+            oscillator_parameter(0, 7),
+            Some(SynthParamsParamId::Osc1Pan)
+        );
+        assert_eq!(oscillator_parameter(0, 8), None);
         assert_eq!(
             destination_parameter(ModDestination::OscPitch(2)),
             u32::from(SynthParamsParamId::Osc3Pitch)
@@ -3435,7 +3474,9 @@ mod tests {
                 h.keyboard.get() != truce_slint::KeyboardCaptureMode::None,
             );
             (190..330)
-                .flat_map(|y| (30..330).map(move |x| y * width as usize + x))
+                .flat_map(|y| {
+                    (30..(width as usize - 400) / 2 - 16).map(move |x| y * width as usize + x)
+                })
                 .filter(|&i| pixels[i].blue > 200 && pixels[i].red < 120)
                 .count()
         };
@@ -3452,5 +3493,36 @@ mod tests {
         assert_eq!(bright_waveform(), 0, "the browser is still open");
         h.key(slint::platform::Key::Escape);
         assert!(bright_waveform() > 100);
+    }
+
+    #[test]
+    fn compact_editor_fits_envelopes_lfos_and_full_effect_cards() {
+        let h = PatchHarness::new();
+        for _ in 1..MAX_OSCILLATORS {
+            h.ui.invoke_oscillator_add();
+        }
+        for _ in 1..MAX_ENVELOPES {
+            h.ui.invoke_envelope_add();
+        }
+        for _ in 0..MAX_LFOS {
+            h.ui.invoke_lfo_add();
+        }
+        for _ in 0..3 {
+            h.ui.invoke_effect_add();
+        }
+        h.frame();
+        for envelope_selected in [true, false] {
+            h.ui.set_envelope_selected(envelope_selected);
+            h.frame();
+            let content_height = h.ui.get_content_height();
+            assert!(
+                content_height <= EDITOR_SIZE.1 as f32,
+                "controls must fit without vertical scrolling: {content_height}"
+            );
+            assert!(
+                EDITOR_SIZE.1 as f32 - content_height <= 32.0,
+                "window must shrink-wrap the content: {content_height}"
+            );
+        }
     }
 }

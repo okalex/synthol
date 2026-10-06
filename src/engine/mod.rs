@@ -37,6 +37,9 @@ pub struct OscillatorSettings {
     pub pitch: f32,
     /// Gain (`0.0..=1.0`), before modulation.
     pub level: f32,
+    /// Stereo position (`-1.0` left to `1.0` right, 0 centered), before
+    /// modulation. Unison width spreads around it.
+    pub pan: f32,
     /// Waveform shape (`-1.0..=1.0`, 0 for the plain waveform), before
     /// modulation.
     pub shape: f32,
@@ -50,6 +53,7 @@ impl Default for OscillatorSettings {
             start_phase: 0.0,
             pitch: 0.0,
             level: 1.0,
+            pan: 0.0,
             shape: 0.0,
             unison: UnisonSettings::default(),
         }
@@ -197,6 +201,7 @@ impl SynthEngine {
         self.set_start_phase(index, settings.start_phase);
         self.set_oscillator_pitch(index, settings.pitch);
         self.set_oscillator_level(index, settings.level);
+        self.set_oscillator_pan(index, settings.pan);
         self.set_oscillator_shape(index, settings.shape);
         self.set_oscillator_unison(index, settings.unison);
     }
@@ -218,6 +223,14 @@ impl SynthEngine {
     pub fn set_oscillator_level(&mut self, index: usize, level: f32) {
         if let Some(oscillator) = self.oscillators.get_mut(index) {
             oscillator.level = level;
+        }
+    }
+
+    /// Set oscillator `index`'s stereo position (`-1.0` left to `1.0` right,
+    /// 0 centered), before modulation. Unison width spreads around it.
+    pub fn set_oscillator_pan(&mut self, index: usize, pan: f32) {
+        if let Some(oscillator) = self.oscillators.get_mut(index) {
+            oscillator.pan = pan;
         }
     }
 

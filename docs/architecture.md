@@ -226,8 +226,9 @@ and applied to every voice; switching takes effect immediately, including on
 sounding notes, without resetting phase.
 
 The oscillator also has a pitch offset in semitones (cached as a frequency
-ratio) and a 0-1 output level, applied per sample from the smoothed `Osc Pitch`
-and `Osc Level` parameters.
+ratio), a 0-1 output level, and a bipolar stereo pan (-1 left to 1 right),
+applied per sample from the smoothed `Osc Pitch`, `Osc Level`, and `Osc Pan`
+parameters.
 
 A bipolar shape (-1 to 1, from the smoothed `Osc Shape` parameter's
 -100%..100%) bends each waveform in `waveform_sample`. Shape 0 takes the
@@ -249,7 +250,10 @@ other controls and note lifecycle. Pitch offsets are evenly spaced across
 the spread and converted to frequency ratios with `2^(cents / 1200)`,
 with equal left/right groups and a centered subvoice
 for odd counts. Linear pan gains and averaging keep zero-detune output
-at the original level, independent of voice count and width. Newly enabled
+at the original level, independent of voice count and width. An oscillator
+pan offsets every subvoice by the same amount, so a widened unison keeps its
+width centered on the pan position, clamped at full left or right. Newly
+enabled
 subvoices start at the running primary phase; note-on resets every phase
 to the configured start phase. Zero detune aligns phases each sample.
 The voice mix and engine output are stereo, and each filter slot owns

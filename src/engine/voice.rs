@@ -269,6 +269,7 @@ impl Voice {
         {
             oscillator.set_pitch(modulate(ModDestination::OscPitch(index), settings.pitch));
             oscillator.set_shape(modulate(ModDestination::OscShape(index), settings.shape));
+            oscillator.set_pan(settings.pan);
             let destination = ModDestination::OscLevel(index);
             let has_level_envelope = controls.envelope_depths[..self.envelope_count]
                 .iter()

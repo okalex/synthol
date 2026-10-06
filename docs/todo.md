@@ -1,4 +1,3 @@
-- Oscillator pan
 - Per oscillator fx chain
 - More FX:
   - Saturator

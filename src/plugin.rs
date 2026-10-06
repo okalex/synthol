@@ -1163,6 +1163,44 @@ pub struct SynthParams {
         format = "format_shape"
     )]
     pub osc_4_shape: FloatParam,
+    /// Stereo position, -100 % (left) to 100 % (right). Unison width spreads
+    /// around it.
+    #[param(
+        name = "Osc 1 Pan",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_pan"
+    )]
+    pub osc_1_pan: FloatParam,
+    #[param(
+        name = "Osc 2 Pan",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_pan"
+    )]
+    pub osc_2_pan: FloatParam,
+    #[param(
+        name = "Osc 3 Pan",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_pan"
+    )]
+    pub osc_3_pan: FloatParam,
+    #[param(
+        name = "Osc 4 Pan",
+        range = "linear(-100, 100)",
+        default = 0.0,
+        unit = "%",
+        smooth = "linear(10)",
+        format = "format_pan"
+    )]
+    pub osc_4_pan: FloatParam,
     /// Name of the loaded patch, saved with the host session. Empty means
     /// the built-in "Default" patch; see `crate::patch`.
     #[persist]
@@ -1628,10 +1666,11 @@ pub struct OscillatorParamIds {
     pub unison_detune: SynthParamsParamId,
     pub unison_width: SynthParamsParamId,
     pub shape: SynthParamsParamId,
+    pub pan: SynthParamsParamId,
 }
 
 impl OscillatorParamIds {
-    pub const fn all(&self) -> [SynthParamsParamId; 8] {
+    pub const fn all(&self) -> [SynthParamsParamId; 9] {
         [
             self.waveform,
             self.phase,
@@ -1641,6 +1680,7 @@ impl OscillatorParamIds {
             self.unison_detune,
             self.unison_width,
             self.shape,
+            self.pan,
         ]
     }
 }
@@ -1655,6 +1695,7 @@ pub const OSCILLATOR_PARAMS: [OscillatorParamIds; MAX_OSCILLATORS] = [
         unison_detune: SynthParamsParamId::Osc1UnisonDetune,
         unison_width: SynthParamsParamId::Osc1UnisonWidth,
         shape: SynthParamsParamId::Osc1Shape,
+        pan: SynthParamsParamId::Osc1Pan,
     },
     OscillatorParamIds {
         waveform: SynthParamsParamId::Osc2Type,
@@ -1665,6 +1706,7 @@ pub const OSCILLATOR_PARAMS: [OscillatorParamIds; MAX_OSCILLATORS] = [
         unison_detune: SynthParamsParamId::Osc2UnisonDetune,
         unison_width: SynthParamsParamId::Osc2UnisonWidth,
         shape: SynthParamsParamId::Osc2Shape,
+        pan: SynthParamsParamId::Osc2Pan,
     },
     OscillatorParamIds {
         waveform: SynthParamsParamId::Osc3Type,
@@ -1675,6 +1717,7 @@ pub const OSCILLATOR_PARAMS: [OscillatorParamIds; MAX_OSCILLATORS] = [
         unison_detune: SynthParamsParamId::Osc3UnisonDetune,
         unison_width: SynthParamsParamId::Osc3UnisonWidth,
         shape: SynthParamsParamId::Osc3Shape,
+        pan: SynthParamsParamId::Osc3Pan,
     },
     OscillatorParamIds {
         waveform: SynthParamsParamId::Osc4Type,
@@ -1685,6 +1728,7 @@ pub const OSCILLATOR_PARAMS: [OscillatorParamIds; MAX_OSCILLATORS] = [
         unison_detune: SynthParamsParamId::Osc4UnisonDetune,
         unison_width: SynthParamsParamId::Osc4UnisonWidth,
         shape: SynthParamsParamId::Osc4Shape,
+        pan: SynthParamsParamId::Osc4Pan,
     },
 ];
 
@@ -1755,6 +1799,16 @@ impl SynthParams {
             "0 %".to_owned()
         } else {
             format!("{value:+.0} %")
+        }
+    }
+
+    fn format_pan(&self, value: f64) -> String {
+        if value.round() == 0.0 {
+            "C".to_owned()
+        } else if value < 0.0 {
+            format!("L {:.0} %", -value)
+        } else {
+            format!("R {value:.0} %")
         }
     }
 
@@ -1829,6 +1883,15 @@ impl SynthParams {
             &self.osc_2_shape,
             &self.osc_3_shape,
             &self.osc_4_shape,
+        ]
+    }
+
+    fn pan_params(&self) -> [&FloatParam; MAX_OSCILLATORS] {
+        [
+            &self.osc_1_pan,
+            &self.osc_2_pan,
+            &self.osc_3_pan,
+            &self.osc_4_pan,
         ]
     }
 
@@ -2017,6 +2080,7 @@ impl PluginLogic for Synth {
         let oscillators = params.oscillator_params();
         let unison = params.unison_params();
         let shapes = params.shape_params();
+        let pans = params.pan_params();
         for (index, (waveform, phase, _, _)) in oscillators.iter().enumerate() {
             state.engine.set_waveform(index, waveform.value().into());
             state.engine.set_start_phase(index, phase.read() / 360.0);
@@ -2066,6 +2130,9 @@ impl PluginLogic for Synth {
                 state
                     .engine
                     .set_oscillator_shape(index, shapes[index].read() / 100.0);
+                state
+                    .engine
+                    .set_oscillator_pan(index, pans[index].read() / 100.0);
                 let (voices, detune, width) = unison[index];
                 state.engine.set_oscillator_unison(
                     index,

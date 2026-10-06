@@ -147,6 +147,62 @@ fn unison_detune_uses_cents_at_the_host_output() {
 }
 
 #[test]
+fn oscillator_pan_parameters_default_centered_and_move_stereo_output() {
+    use crate::plugin::{OSCILLATOR_PARAMS, SynthParams, SynthParamsParamId};
+    use std::time::Duration;
+    use truce::prelude::*;
+    use truce_test::driver;
+
+    let params = SynthParams::default();
+    let pan = OSCILLATOR_PARAMS[0].pan;
+    assert_eq!(params.get_plain(pan.into()), Some(0.0));
+    assert_eq!(params.format_value(pan.into(), 0.0).as_deref(), Some("C"));
+    assert_eq!(
+        params.format_value(pan.into(), -50.0).as_deref(),
+        Some("L 50 %")
+    );
+    assert_eq!(
+        params.format_value(pan.into(), 100.0).as_deref(),
+        Some("R 100 %")
+    );
+    params.set_normalized(pan.into(), 0.0);
+    assert_eq!(params.get_plain(pan.into()), Some(-100.0));
+    params.set_normalized(pan.into(), 1.0);
+    assert_eq!(params.get_plain(pan.into()), Some(100.0));
+
+    for (index, ids) in OSCILLATOR_PARAMS.iter().enumerate() {
+        let render = |pan| {
+            let mut driver = driver!(Plugin)
+                .duration(Duration::from_millis(100))
+                .set_param(SynthParamsParamId::EnvCount, 0.0)
+                .set_param(SynthParamsParamId::OscCount, index as f64 / 3.0)
+                .set_param(SynthParamsParamId::FilterMix, 0.0)
+                .set_param(ids.pan, pan);
+            for (other, params) in OSCILLATOR_PARAMS.iter().enumerate() {
+                driver = driver.set_param(params.level, if other == index { 1.0 } else { 0.0 });
+            }
+            driver.script(|script| script.note_on(69, 1.0)).run()
+        };
+        let centered = render(0.5);
+        assert_eq!(centered.output[0], centered.output[1]);
+        let left = render(0.0);
+        assert!(
+            left.output[0]
+                .iter()
+                .zip(&left.output[1])
+                .any(|(left, right)| left.abs() > right.abs() + 0.1)
+        );
+        let right = render(1.0);
+        assert!(
+            right.output[1]
+                .iter()
+                .zip(&right.output[0])
+                .any(|(right, left)| right.abs() > left.abs() + 0.1)
+        );
+    }
+}
+
+#[test]
 fn note_off_stops_the_oscillator() {
     use std::time::Duration;
     use truce_test::{assertions, driver};

@@ -54,6 +54,8 @@ pub struct Oscillator {
     pitch_ratio: f32,
     /// Output gain, 0 to 1.
     level: f32,
+    /// Stereo position, -1 (left) to 1 (right); 0 is centered.
+    pan: f32,
     /// Waveform shape, -1 to 1; 0 plays the plain waveform.
     shape: f32,
     waveform: Waveform,
@@ -73,6 +75,7 @@ impl Default for Oscillator {
             pitch_semitones: 0.0,
             pitch_ratio: 1.0,
             level: 1.0,
+            pan: 0.0,
             shape: 0.0,
             waveform: Waveform::default(),
             active_note: None,
@@ -120,6 +123,16 @@ impl Oscillator {
             level.clamp(0.0, 1.0)
         } else {
             1.0
+        };
+    }
+
+    /// Set the stereo position (`-1.0` left to `1.0` right, 0 centered).
+    /// Unison width spreads around it, clamped to full left or right.
+    pub fn set_pan(&mut self, pan: f32) {
+        self.pan = if pan.is_finite() {
+            pan.clamp(-1.0, 1.0)
+        } else {
+            0.0
         };
     }
 
@@ -176,13 +189,16 @@ impl Oscillator {
             } else {
                 2.0 * index as f32 / (count - 1) as f32 - 1.0
             };
-            let pan = if 2 * index + 1 == count {
+            let spread = if 2 * index + 1 == count {
                 0.0
             } else if index < count / 2 {
                 -width
             } else {
                 width
             };
+            // The oscillator's pan shifts the whole unison spread, so the
+            // width stays centered on the pan position.
+            let pan = (self.pan + spread).clamp(-1.0, 1.0);
             let phase = if index == 0 {
                 &mut self.phase
             } else {
@@ -642,50 +658,86 @@ mod tests {
     fn unison_detunes_symmetrically_and_pans_pairs_with_a_centered_odd_voice() {
         for count in 1..=MAX_UNISON_VOICES {
             for width in [0.0, 0.5, 1.0] {
-                let settings = UnisonSettings {
-                    voices: count,
-                    detune: 50.0,
-                    width,
-                };
-                let mut oscillator = Oscillator::default();
-                oscillator.reset(48_000.0);
-                oscillator.set_start_phase(0.125);
-                oscillator.handle_event(MidiEvent::NoteOn {
-                    note: 69,
-                    velocity: 127,
-                });
-                let mut phases = vec![0.125; count];
-                for _ in 0..2000 {
-                    let mut expected = [0.0; 2];
-                    for (index, phase) in phases.iter_mut().enumerate() {
-                        let offset = if count == 1 {
-                            0.0
-                        } else {
-                            (2 * index) as f32 / (count - 1) as f32 - 1.0
-                        };
-                        let pan = if 2 * index + 1 == count {
-                            0.0
-                        } else {
-                            if index < count / 2 { -width } else { width }
-                        };
-                        let sample = (TAU * *phase).sin() / count as f32;
-                        expected[0] += sample * (1.0 - pan);
-                        expected[1] += sample * (1.0 + pan);
-                        *phase = (*phase + 440.0 / 48_000.0 * (offset / 24.0).exp2()).fract();
-                    }
-                    let actual = oscillator.next_stereo_sample(settings);
-                    for channel in 0..2 {
-                        assert!(
-                            (actual[channel] - expected[channel]).abs() < 1e-5,
-                            "{count} voices, width {width}, channel {channel}"
-                        );
-                    }
-                    if width == 0.0 {
-                        assert_eq!(actual[0], actual[1]);
+                for pan in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+                    let settings = UnisonSettings {
+                        voices: count,
+                        detune: 50.0,
+                        width,
+                    };
+                    let mut oscillator = Oscillator::default();
+                    oscillator.reset(48_000.0);
+                    oscillator.set_pan(pan);
+                    oscillator.set_start_phase(0.125);
+                    oscillator.handle_event(MidiEvent::NoteOn {
+                        note: 69,
+                        velocity: 127,
+                    });
+                    let mut phases = vec![0.125; count];
+                    for _ in 0..2000 {
+                        let mut expected = [0.0; 2];
+                        for (index, phase) in phases.iter_mut().enumerate() {
+                            let offset = if count == 1 {
+                                0.0
+                            } else {
+                                (2 * index) as f32 / (count - 1) as f32 - 1.0
+                            };
+                            let spread = if 2 * index + 1 == count {
+                                0.0
+                            } else if index < count / 2 {
+                                -width
+                            } else {
+                                width
+                            };
+                            let voice_pan = (pan + spread).clamp(-1.0, 1.0);
+                            let sample = (TAU * *phase).sin() / count as f32;
+                            expected[0] += sample * (1.0 - voice_pan);
+                            expected[1] += sample * (1.0 + voice_pan);
+                            *phase = (*phase + 440.0 / 48_000.0 * (offset / 24.0).exp2()).fract();
+                        }
+                        let actual = oscillator.next_stereo_sample(settings);
+                        for channel in 0..2 {
+                            assert!(
+                                (actual[channel] - expected[channel]).abs() < 1e-5,
+                                "{count} voices, width {width}, pan {pan}, channel {channel}"
+                            );
+                        }
+                        if width == 0.0 && pan == 0.0 {
+                            assert_eq!(actual[0], actual[1]);
+                        }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn pan_positions_a_single_voice_between_the_channels() {
+        let render = |pan| {
+            let mut oscillator = Oscillator::default();
+            oscillator.reset(48_000.0);
+            oscillator.set_pan(pan);
+            oscillator.handle_event(MidiEvent::NoteOn {
+                note: 69,
+                velocity: 127,
+            });
+            (0..100)
+                .map(|_| oscillator.next_stereo_sample(UnisonSettings::default()))
+                .collect::<Vec<_>>()
+        };
+        let centered = render(0.0);
+        assert!(centered.iter().all(|sample| sample[0] == sample[1]));
+        // Full pan silences the far channel and doubles the near one, so the
+        // mono sum keeps the level.
+        let left = render(-1.0);
+        assert!(left.iter().all(|sample| sample[1] == 0.0));
+        assert!(left.iter().any(|sample| sample[0].abs() > 0.0));
+        let right = render(1.0);
+        assert!(right.iter().all(|sample| sample[0] == 0.0));
+        assert!(right.iter().any(|sample| sample[1].abs() > 0.0));
+        // Non-finite pans fall back to center.
+        let mut oscillator = Oscillator::default();
+        oscillator.set_pan(f32::NAN);
+        assert_eq!(oscillator.pan, 0.0);
     }
 
     #[test]

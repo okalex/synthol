@@ -2,7 +2,7 @@ import { EnvelopeTimeScale, FilterResponseDisplay, AdsrEnvelopePanel, Dropdown, 
 export { EnvelopeTimeScale }
 
 export { KnobModulation, LfoCurveHandle, LfoNode, ModRouteSlot, PositionMarker }
-import { EffectRow, EffectCard } from "effects.slint";
+import { EffectRow, EffectCard, EffectLayout } from "effects.slint";
 export { EffectRow }
 
 // One active oscillator's controls, as normalized parameter values.
@@ -16,6 +16,8 @@ export struct OscillatorRow {
     level-text: string,
     shape: float,
     shape-text: string,
+    pan: float,
+    pan-text: string,
     unison-voices: float,
     unison-detune: float,
     unison-width: float,
@@ -117,7 +119,7 @@ export component SynthUi inherits Window {
     in-out property <string> release-text: "1000.0 ms";
     in-out property <int> voices: 8;
     // The active oscillators; see `oscillator_row` in editor.rs.
-    in-out property <[OscillatorRow]> oscillators: [{ waveform: 0, phase: 0.0, phase-text: "0.0 °", pitch: 0.5, pitch-text: "+0.00 st", level: 1.0, level-text: "100 %", shape: 0.5, shape-text: "0 %", unison-voices: 0, unison-detune: 0, unison-width: 0 }];
+    in-out property <[OscillatorRow]> oscillators: [{ waveform: 0, phase: 0.0, phase-text: "0.0 °", pitch: 0.5, pitch-text: "+0.00 st", level: 1.0, level-text: "100 %", shape: 0.5, shape-text: "0 %", pan: 0.5, pan-text: "C", unison-voices: 0, unison-detune: 0, unison-width: 0 }];
     in property <int> max-oscillators: 4;
     // The oscillator tab the user picked; `current-oscillator` keeps it in
     // range while the oscillator list changes.
@@ -137,7 +139,7 @@ export component SynthUi inherits Window {
     // Waveform, normalized shape and phase, then the plot's width and height.
     pure callback oscillator-cycle-path(int, float, float, float, float) -> string;
     // Parameter id 0 is pitch, 1 is level, 2 is phase, 3-5 are unison voices,
-    // detune and width, 6 is shape.
+    // detune and width, 6 is shape, 7 is pan.
     callback osc-changed(int, int, float);
     callback osc-released(int, int);
     callback oscillator-add();
@@ -153,7 +155,7 @@ export component SynthUi inherits Window {
     private property <int> dragged-effect: -1;
     private property <length> effect-pointer-x;
     private property <length> effect-pointer-y;
-    private property <int> effect-drop-index: clamp(floor((root.effect-pointer-x - effects-chain.absolute-position.x) / 360px), 0, root.effects.length - 1);
+    private property <int> effect-drop-index: clamp(floor((root.effect-pointer-x - effects-chain.absolute-position.x) / EffectLayout.stride), 0, root.effects.length - 1);
     in-out property <int> filter-type: 0;
     in-out property <float> filter-cutoff: 1.0;
     in-out property <string> filter-cutoff-text: "20.0 kHz";
@@ -242,8 +244,9 @@ export component SynthUi inherits Window {
     callback patch-saved(string, bool);
 
     title: "Synthol";
-    preferred-width: 1100px;
-    preferred-height: 1100px;
+    preferred-width: 980px;
+    preferred-height: 1016px;
+    out property <length> content-height: 66px + content.preferred-height;
     background: #17191f;
     default-font-family: "JetBrains Mono";
 
@@ -305,7 +308,7 @@ export component SynthUi inherits Window {
                         alignment: center;
 
                         OutputGainSlider {
-                            width: 300px;
+                            width: 240px;
                             value <=> root.gain;
                             value-text: root.gain-text;
                             pressed => { root.gain-pressed(); }
@@ -342,7 +345,7 @@ export component SynthUi inherits Window {
         body := Flickable {
             min-width: 0px;
             max-width: 65535px;
-            preferred-width: 1100px;
+            preferred-width: 980px;
             interactive: false;
             viewport-width: self.width;
             viewport-height: content.preferred-height;
@@ -357,7 +360,7 @@ export component SynthUi inherits Window {
                     spacing: 16px;
 
                     VerticalLayout {
-                        width: (body.width - 52px) / 2;
+                        width: (body.width - 52px) / 2 + 71px;
                         alignment: start;
                         spacing: 4px;
 
@@ -440,9 +443,6 @@ export component SynthUi inherits Window {
                                         SynthKnob {
                                             value: root.current-osc.phase;
                                             label: "PHASE";
-                                            // The value text ends well above the knob's
-                                            // full height; trim it inside the panel.
-                                            height: 88px;
                                             parameter-id: 2;
                                             value-text: root.current-osc.phase-text;
                                             changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
@@ -452,7 +452,6 @@ export component SynthUi inherits Window {
                                         SynthKnob {
                                             value: root.current-osc.pitch;
                                             label: "PITCH";
-                                            height: 88px;
                                             parameter-id: 0;
                                             value-text: root.current-osc.pitch-text;
                                             mod-target: 2 * root.current-oscillator;
@@ -471,7 +470,6 @@ export component SynthUi inherits Window {
                                         SynthKnob {
                                             value: root.current-osc.level;
                                             label: "LEVEL";
-                                            height: 88px;
                                             parameter-id: 1;
                                             value-text: root.current-osc.level-text;
                                             mod-target: 2 * root.current-oscillator + 1;
@@ -490,7 +488,6 @@ export component SynthUi inherits Window {
                                         SynthKnob {
                                             value: root.current-osc.shape;
                                             label: "SHAPE";
-                                            height: 88px;
                                             parameter-id: 6;
                                             value-text: root.current-osc.shape-text;
                                             mod-target: root.shape-mod-target + root.current-oscillator;
@@ -506,8 +503,17 @@ export component SynthUi inherits Window {
                                             mod-depth-released(target) => { root.mod-depth-released(target); }
                                         }
 
+                                        SynthKnob {
+                                            value: root.current-osc.pan;
+                                            label: "PAN";
+                                            parameter-id: 7;
+                                            value-text: root.current-osc.pan-text;
+                                            changed(id, value) => { root.osc-changed(root.current-oscillator, id, value); }
+                                            released(id) => { root.osc-released(root.current-oscillator, id); }
+                                        }
+
                                         VerticalLayout {
-                                            width: 132px;
+                                            width: 148px;
                                             spacing: 3px;
                                             alignment: start;
                                             Text {
@@ -552,7 +558,7 @@ export component SynthUi inherits Window {
                     }
 
                     VerticalLayout {
-                        width: (body.width - 52px) / 2;
+                        width: (body.width - 52px) / 2 - 71px;
                         alignment: start;
                         spacing: 4px;
 
@@ -650,7 +656,7 @@ export component SynthUi inherits Window {
 
                                     if root.envelope-selected: AdsrEnvelopePanel {
                                         compact: true;
-                                        height: 260px;
+                                        height: 238px;
                                         attack <=> root.attack;
                                         decay <=> root.decay;
                                         sustain <=> root.sustain;
@@ -736,7 +742,6 @@ export component SynthUi inherits Window {
                                             alignment: center;
 
                                             SynthKnob {
-                                                height: 88px;
                                                 value: root.lfo-rate;
                                                 label: "RATE";
                                                 value-text: root.lfo-rate-text;
@@ -822,9 +827,9 @@ export component SynthUi inherits Window {
                     }
 
                     effects := Flickable {
-                        height: 360px;
+                        height: EffectLayout.card-height;
                         interactive: false;
-                        viewport-width: max(self.width, root.effects.length * 360px - 12px);
+                        viewport-width: max(self.width, root.effects.length * EffectLayout.stride - EffectLayout.spacing);
                         viewport-height: self.height;
                         changed width => {
                             self.viewport-x = clamp(self.viewport-x, min(0px, self.width - self.viewport-width), 0px);
@@ -848,9 +853,9 @@ export component SynthUi inherits Window {
                         effects-chain := HorizontalLayout {
                             x: 0px;
                             y: 0px;
-                            width: max(0px, root.effects.length * 360px - 12px);
+                            width: max(0px, root.effects.length * EffectLayout.stride - EffectLayout.spacing);
                             height: effects.height;
-                            spacing: 12px;
+                            spacing: EffectLayout.spacing;
                             alignment: start;
 
                                 for effect[index] in root.effects: EffectCard {

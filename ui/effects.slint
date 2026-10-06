@@ -11,6 +11,13 @@ export struct EffectRow {
     mix-text: string,
 }
 
+export global EffectLayout {
+    out property <length> card-width: 264px;
+    out property <length> card-height: 314px;
+    out property <length> spacing: 12px;
+    out property <length> stride: self.card-width + self.spacing;
+}
+
 export component EffectCard inherits Rectangle {
     in property <EffectRow> effect;
     in property <bool> drop-hover;
@@ -34,7 +41,8 @@ export component EffectCard inherits Rectangle {
     callback mod-depth-released(int);
     pure callback response-path(int, float, float, float, float, float) -> string;
 
-    width: 348px;
+    width: EffectLayout.card-width;
+    height: EffectLayout.card-height;
     background: root.dragged ? #292d36 : #20232b;
     border-radius: 8px;
     border-width: root.drop-hover ? 2px : 1px;
@@ -84,7 +92,7 @@ export component EffectCard inherits Rectangle {
             }
         }
         FilterResponseDisplay {
-            width: 324px;
+            width: EffectLayout.card-width - 24px;
             height: 180px;
             filter-type: root.effect.kind;
             cutoff: root.effect.cutoff;

@@ -18,13 +18,14 @@ another (up to four) and opens its tab; each tab's × button removes that
 oscillator (the last one can't be removed), and later oscillators move up to
 fill the gap. The number
 of oscillators is the host-automatable **Oscillators** parameter, and each
-oscillator has its own host-automatable type, phase, pitch, level, and shape
-parameters ("Osc 1 Type" through "Osc 4 Shape"). Every voice plays all active
+oscillator has its own host-automatable type, phase, pitch, level, shape, and
+pan parameters ("Osc 1 Type" through "Osc 4 Pan"). Every voice plays all active
 oscillators on its note and sums them, unnormalized, before the filter, so
 several oscillators at full level can exceed 0 dBFS; lower their levels if
 needed.
 
-The editor opens at 1100 x 1100 logical pixels. Oscillators occupy the left
+The editor opens at 980 x 1016 logical pixels. Knobs are compact, with 33-pixel
+dials and full-size text labels. Oscillators occupy the left
 column and Modulators the right, with larger waveform plots and their knobs
 directly underneath. The full-width, horizontally scrollable **Effects** chain
 below them starts with one compact Filter card. **+ FILTER** appends another
@@ -53,9 +54,10 @@ sets where in the cycle each new note starts; sounding notes are unaffected.
 Phases other than 0° start mid-cycle, so short attacks may click. A **Pitch**
 knob transposes that oscillator by ±24 semitones and a **Level** knob (0% to
 100%) sets its volume before the filter; both are host-automatable and
-smoothed. A bipolar **Shape** knob (-100% to 100%, default 0%, also
-host-automatable and smoothed) bends the waveform; at 0% every type is
-unchanged:
+smoothed. A bipolar **Pan** knob (-100% left to 100% right, default 0%, also
+host-automatable and smoothed) places the oscillator in the stereo field. A
+bipolar **Shape** knob (-100% to 100%, default 0%, also host-automatable and
+smoothed) bends the waveform; at 0% every type is unchanged:
 
 - **Sine** and **Triangle** lean: turning left shortens the rise and
   lengthens the fall until, fully left, the wave is a rounded (or, for
@@ -89,6 +91,8 @@ decrease it; hold Shift for finer adjustment:
   half are hard left and half hard right. Odd counts leave one voice centered.
   One voice stays centered regardless of detune or width. At zero detune,
   voices are phase-aligned, so width alone does not create stereo separation.
+  The oscillator's **Pan** knob shifts the whole spread, so a widened unison
+  stays centered on the pan position, clamped at full left or right.
 
 The unison mix is averaged to avoid multiplying the oscillator's level by
 its voice count. Each subvoice starts at the Phase knob's position and
