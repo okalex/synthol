@@ -245,7 +245,11 @@ export component SynthUi inherits Window {
 
     title: "Synthol";
     preferred-width: 980px;
-    preferred-height: 1016px;
+    preferred-height: 1034px;
+    // Exposes the preferred size so tests can assert it matches `EDITOR_SIZE`
+    // in editor.rs; the host sizes the window from that constant.
+    out property <length> preferred-size-width: self.preferred-width;
+    out property <length> preferred-size-height: self.preferred-height;
     out property <length> content-height: 66px + content.preferred-height;
     background: #17191f;
     default-font-family: "JetBrains Mono";
@@ -354,7 +358,7 @@ export component SynthUi inherits Window {
                 width: body.width;
                 height: self.preferred-height;
                 padding: 18px;
-                spacing: 10px;
+                spacing: 16px;
 
                 HorizontalLayout {
                     spacing: 16px;
@@ -362,7 +366,7 @@ export component SynthUi inherits Window {
                     VerticalLayout {
                         width: (body.width - 52px) / 2 + 71px;
                         alignment: start;
-                        spacing: 4px;
+                        spacing: 8px;
 
                         HorizontalLayout {
                             height: 22px;
@@ -560,7 +564,7 @@ export component SynthUi inherits Window {
                     VerticalLayout {
                         width: (body.width - 52px) / 2 - 71px;
                         alignment: start;
-                        spacing: 4px;
+                        spacing: 8px;
 
                         HorizontalLayout {
                             height: 22px;
@@ -824,6 +828,10 @@ export component SynthUi inherits Window {
                             horizontal-alignment: right;
                             vertical-alignment: center;
                         }
+                    }
+
+                    Rectangle {
+                        height: 4px;
                     }
 
                     effects := Flickable {

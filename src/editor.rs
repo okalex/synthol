@@ -30,7 +30,7 @@ use crate::plugin::{
 
 slint::include_modules!();
 
-const EDITOR_SIZE: (u32, u32) = (980, 1016);
+const EDITOR_SIZE: (u32, u32) = (980, 1034);
 
 const ENVELOPE_PLOT_MAX_MS: f32 = 30_000.0;
 
@@ -2446,7 +2446,7 @@ mod tests {
             );
         }
         assert_eq!(
-            pixel_at(&active_pixels, right_column + 220, 150),
+            pixel_at(&active_pixels, right_column + 220, 154),
             (41, 45, 54),
             "LFO mode selector must be beside the shape selector above the plot"
         );
@@ -3524,5 +3524,24 @@ mod tests {
                 "window must shrink-wrap the content: {content_height}"
             );
         }
+    }
+
+    /// The host sizes the plugin window from `EDITOR_SIZE`, while the layout
+    /// fits itself to the window's `preferred-height`. Spacing changes must
+    /// move both together, so guard the pair against drifting apart.
+    #[test]
+    fn slint_preferred_size_matches_editor_size() {
+        truce_slint::platform::ensure_platform();
+        let ui = SynthUi::new().unwrap();
+        assert_eq!(
+            ui.get_preferred_size_width(),
+            EDITOR_SIZE.0 as f32,
+            "Slint preferred-width must match EDITOR_SIZE.0"
+        );
+        assert_eq!(
+            ui.get_preferred_size_height(),
+            EDITOR_SIZE.1 as f32,
+            "Slint preferred-height must match EDITOR_SIZE.1"
+        );
     }
 }
