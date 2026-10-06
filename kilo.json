@@ -1,0 +1,6 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "provider": "openrouter",
+  "model": "anthropic/claude-opus-4-20250805",
+  "small_model": "anthropic/claude-haiku-4.5"
+}
